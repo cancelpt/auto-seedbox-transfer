@@ -200,8 +200,8 @@ def main(settings, seed_box_name, home_dl_name, target_download_dir):
         logger.info(f"种子{torrent.name} 的 BT 种子不在盒子上，开始添加")
 
         if 'Ok.' in seed_box_dl.torrents_add(torrent_files=torrent_status.bt_torrent_file_path,
-                                            category='keep', is_skip_checking=True,
-                                            download_path=torrent.get('save_path')):
+                                            category=settings.transfer.seed_box_bt_category, is_skip_checking=True,
+                                            download_path=torrent.save_path):
             logger.info(f"添加种子成功：{torrent_hash_to_info[torrent_status.hash].file_name}")
             seed_box_torrent_hashes.append(torrent_status.hash)
             torrent_status.is_bt_in_seed_box = True
@@ -237,7 +237,7 @@ def main(settings, seed_box_name, home_dl_name, target_download_dir):
             torrent_file_path = torrent_status.bt_torrent_file_path
             logger.info(f"向家宽下载器放 BT 种子：{torrent_file_path}")
             if 'Ok.' in home_dl.torrents_add(torrent_files=torrent_file_path, download_dir=target_download_dir,
-                                             category='BT'):
+                                             category=settings.transfer.home_bt_category):
                 logger.info(f"家宽添加种子成功：{torrent_file_path}")
                 torrent_status.is_bt_in_home_dl = True
                 save_transfer_status(transfer_status_dict, transfer_file_path)
@@ -256,7 +256,7 @@ def main(settings, seed_box_name, home_dl_name, target_download_dir):
             logger.info(f"向本地下载器放 {bt_torrent.name} 的原始种子")
             if 'Ok.' in home_dl.torrents_add(torrent_files=torrent_status.origin_torrent_file_path,
                                              download_dir=target_download_dir,
-                                             category='ORIGIN_TEMP',
+                                             category=settings.transfer.home_origin_temp_category,
                                              is_skip_checking=True):
                 logger.info(f"家宽添加种子成功：{bt_torrent.name}")
                 torrent_status.is_torrent_in_home_dl = True
@@ -276,7 +276,7 @@ def main(settings, seed_box_name, home_dl_name, target_download_dir):
                 f"家宽重新检查发现{os.path.basename(torrent_status.origin_torrent_file_path)}的BT种子和原始种子都在，"
                 f"因此删除BT种子：{torrent_status.bt_hash}")
             
-            home_dl.torrents_set_category(category="ORIGIN", torrent_hashes=torrent_status.hash)
+            home_dl.torrents_set_category(category=settings.transfer.home_origin_category, torrent_hashes=torrent_status.hash)
 
         elif (torrent_status.hash in home_dl_hash and torrent_status.bt_hash not in home_dl_hash
               and not torrent_status.is_torrent_in_home_dl):
@@ -306,7 +306,7 @@ def main(settings, seed_box_name, home_dl_name, target_download_dir):
             logger.info(f"家宽重新检查发现原始种子在：{os.path.basename(torrent_status.origin_torrent_file_path)}"
                         f"因此删除BT种子：{torrent_status.bt_hash}")
             
-            home_dl.torrents_set_category(category="ORIGIN", torrent_hashes=torrent_status.hash)
+            home_dl.torrents_set_category(category=settings.transfer.home_origin_category, torrent_hashes=torrent_status.hash)
     return operation_make
     pass
 

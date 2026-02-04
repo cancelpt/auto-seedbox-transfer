@@ -26,6 +26,14 @@ transfer:
   original_torrent_path: ./downloads  # 原始种子存放路径
   bt_path: ../bt                      # 转换后的 BT 种子存放路径
   torrent_info_path: torrent_info.json # 种子传输状态记录文件
+  max_once_add: 10                    # 每次最大添加种子数，防止瞬间添加过多导致拥堵
+  seed_box_bt_category: 'keep'        # 盒子 BT 种子分类，请确保不会被vertex之类的脚本自动删种
+  home_bt_category: 'BT'              # 家宽 BT 种子分类
+  home_origin_temp_category: 'ORIGIN_TEMP' # 家宽 临时原始种子分类，在 BT 种子还没被移除时的原始种子分类
+  home_origin_category: 'ORIGIN'      # 家宽 原始种子分类，在 BT 种子被移除后的原始种子分类，表示转移完成
+  bt_trackers:                        # BT 种子使用的 tracker 列表，请确保盒子和家宽都能正常访问
+    - http://tracker1
+    - http://tracker2
 ```
 
 ### 2. 种子盒子配置 (`seed_box`)
@@ -35,7 +43,7 @@ transfer:
 ```yaml
 seed_box:
 - name: nc                          # 盒子名称
-  ssh_host: 123.123.123.123          # SSH 主机 IP
+  ssh_host: 123.123.123.123         # SSH 主机 IP
   ipv6: ...                         # IPv6 地址 (可选)
   incoming_port: 12345              # 传入端口
   ssh_user: root                    # SSH 用户名
@@ -53,7 +61,7 @@ downloaders:
   url: http://127.0.0.1:8080        # WebUI 地址
   username: username                # WebUI 用户名
   password: password                # WebUI 密码
-  want_torrent_category: To       # 期望的种子分类
+  want_torrent_category: To         # 期望的种子分类
 ```
 
 ## 使用说明
