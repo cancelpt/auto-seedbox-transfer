@@ -94,12 +94,12 @@ class SeedBoxManager:
                 continue
 
             # Add BT torrent
-            logger.info(f"Adding BT torrent to seedbox: {torrent.name}")
+            logger.info(f"Adding BT torrent to seedbox: {torrent.name}, {torrent.save_path}")
             if 'Ok.' in seed_box_dl.torrents_add(
                 torrent_files=state.bt_torrent_file_path,
                 category=self.config.transfer.seed_box_bt_category,
                 is_skip_checking=True,
-                download_path=torrent.save_path
+                save_path=torrent.save_path
             ):
                 logger.info(f"Successfully added BT torrent: {state.bt_hash}")
                 state.is_bt_in_seed_box = True
