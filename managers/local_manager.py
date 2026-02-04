@@ -17,8 +17,7 @@ class LocalManager:
         self.config = config
         self.state_manager = state_manager
         self.bt_path = config.transfer.bt_path
-        if not os.path.exists(self.bt_path):
-            os.makedirs(self.bt_path)
+        self.bt_path = config.transfer.bt_path
 
     def run(self):
         """Run local management tasks."""

@@ -17,6 +17,8 @@ class Transfer(BaseModel):
     local_interval: int = 30
     seedbox_interval: int = 60
     home_interval: int = 30
+    auto_dl_torrent_from_seedbox: bool = False
+    exit_on_finish: bool = False
 
 
 class SeedBox(BaseModel):

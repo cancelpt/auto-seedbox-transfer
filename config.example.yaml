@@ -1,10 +1,10 @@
 transfer:
-  # 原始种子存放路径 (本地下载器映射出的路径)
-  original_torrent_path: ./downloads
-  # 转换后的 BT 种子存放路径 (Relative to running dir)
-  bt_path: ../bt
+  # 原始种子存放路径
+  original_torrent_path: ../auto-seedbox-transfer-workspace/downloads
+  # 转换后的 BT 种子存放路径
+  bt_path: ../auto-seedbox-transfer-workspace/bt
   # 种子传输状态记录文件
-  torrent_info_path: torrent_info.json
+  torrent_info_path: ../auto-seedbox-transfer-workspace/torrent_info.json
   # 每次最大添加种子数
   max_once_add: 5
   # 盒子 BT 种子添加时的分类
@@ -21,6 +21,10 @@ transfer:
   seedbox_interval: 60
   # 家宽信息获取间隔 (秒)
   home_interval: 30
+  # 是否自动从盒子下载种子文件 (True/False)，默认 False
+  auto_dl_torrent_from_seedbox: False
+  # 当盒子没有待处理种子时是否自动退出 (True/False)，默认 False
+  exit_on_finish: False
   # BT 种子使用的 tracker 列表
   bt_trackers:
   - http://tracker1
@@ -28,22 +32,24 @@ transfer:
 
 seed_box:
 - name: remote-qb
-  ssh_host: 192.168.1.100
+  ssh_host: 123.123.123.123
   ipv6: 2001:db8::1
   incoming_port: 60000
   #    ssh_port: 22
   ssh_user: root
-  ssh_password: YOUR_PASSWORD
+  ssh_password: YOUR_SSH_PASSWORD
   torrents_path: /home/user/.local/share/qBittorrent/BT_backup
 
 downloaders:
+- name: remote-qb # 该名称与seed_box配置项内的name联动
+  url: http://123.123.123.123:8080
+  username: admin
+  password: YOUR_QB_PASSWORD
+  # 需要回传的种子分类
+  want_torrent_category: To
+
 - name: home-qb
   url: http://127.0.0.1:8080
   username: admin
   password: YOUR_PASSWORD
-  want_torrent_category: ExampleCategory
 
-- name: remote-qb
-  url: http://192.168.1.101:8080
-  username: admin
-  password: YOUR_PASSWORD

@@ -15,103 +15,58 @@
 pip install -r requirements.txt
 ```
 
-## 配置说明
+## 工作流程
 
-项目主要通过 `config.yaml` 进行配置。配置文件主要包含以下几个部分：
+- 一个完整的工作流通常是由盒子上的下载器选定了一部分种子需要回传到本地下载器，此时将这部分种子分类改为**指定分类**。
 
-### 1. 传输配置 (`transfer`)
+- 脚本运行时，会自动**通过 sftp 文件传输**从盒子下载指定分类的种子文件**同时补齐 tracker 信息**，然后转换成 BT 种子文件，**用于盒子和本地下载器传输**。
 
-```yaml
-transfer:
-  original_torrent_path: ./downloads  # 原始种子存放路径
-  bt_path: ../bt                      # 转换后的 BT 种子存放路径
-  torrent_info_path: torrent_info.json # 种子传输状态记录文件
-  max_once_add: 10                    # 每次最大添加种子数，防止瞬间添加过多导致拥堵
-  seed_box_bt_category: 'keep'        # 盒子 BT 种子分类，请确保不会被vertex之类的脚本自动删种
-  home_bt_category: 'BT'              # 家宽 BT 种子分类
-  home_origin_temp_category: 'ORIGIN_TEMP' # 家宽 临时原始种子分类，在 BT 种子还没被移除时的原始种子分类
-  home_origin_category: 'ORIGIN'      # 家宽 原始种子分类，在 BT 种子被移除后的原始种子分类，表示转移完成
-  local_interval: 30                  # 本地 BT 目录扫描间隔 (秒)
-  seedbox_interval: 60                # 盒子信息获取间隔 (秒)
-  home_interval: 30                   # 家宽信息获取间隔 (秒)
-  bt_trackers:                        # BT 种子使用的 tracker 列表，请确保盒子和家宽都能正常访问
-    - http://tracker1
-    - http://tracker2
-```
+- 脚本先向盒子添加 BT 种子，再向本地下载器添加 BT 种子，此时如果顺利，那么本地下载器则会**与盒子 P2P 传输**。
 
-### 2. 种子盒子配置 (`seed_box`)
+- 等待本地下载器完成 BT 种子下载后，脚本会先将**原始种子辅种**在本地下载器，然后**删除本地的 BT 种子**（不删资源文件）。
 
-配置种子盒子的 SSH 连接信息和路径。
+- 最后脚本会将原始种子和 BT 种子从盒子上删除。
 
-```yaml
-seed_box:
-- name: nc                          # 盒子名称
-  ssh_host: 123.123.123.123         # SSH 主机 IP
-  ipv6: ...                         # IPv6 地址 (可选)
-  incoming_port: 12345              # 传入端口
-  ssh_user: root                    # SSH 用户名
-  ssh_password: ...                 # SSH 密码
-  torrents_path: /path/to/backup    # 盒子上的种子路径
-```
+## 快速开始
 
-### 3. 下载器配置 (`downloaders`)
+1. **配置环境**
+   复制 `config.example.yaml` 为 `config.yaml`，并填写正确的盒子和下载器信息。
 
-配置 qBittorrent 下载器的连接信息。
+   ```bash
+   cp config.example.yaml config.yaml
+   ```
 
-```yaml
-downloaders:
-- name: home-qb                     # 下载器名称
-  url: http://127.0.0.1:8080        # WebUI 地址
-  username: username                # WebUI 用户名
-  password: password                # WebUI 密码
-  want_torrent_category: To         # 期望的种子分类
-```
+   假设你盒子通过 Vertex 自动删种，并且设置了`keep`和`To`分类的种子不会被删除，其中`To`是你想回传到本地下载器的种子分类，那么配置`seed_box_bt_category`为`keep`用于临时 BT 种子分类，配置`want_torrent_category`为`To`用于回传的种子分类。
 
-## 使用说明
+   BT 的 tracker 列表通常不是必须的，因为当你配置了`ssh host`和`incoming_port`时，脚本会自动添加盒子的 peer 信息到本地下载器的每个 BT 种子。
 
-### 1. 种子盒子助手 (`main.py`)
+   `home_origin_temp_category`和`home_origin_category`影响不大，选择你喜欢的分类即可，用于方便在本地下载器上区分哪些种子是由盒子回传的。
 
-该脚本用于持续监控和管理种子状态，将盒子上的种子自动下载到本地下载器。
+   `auto_dl_torrent_from_seedbox`设置为`True`时，脚本会自动从盒子下载种子文件，否则需要手动从盒子导出种子文件或者你本地就有种子文件，总之那就放在`original_torrent_path`里。
 
-**命令格式:**
+   `exit_on_finish`设置为`True`时，脚本会在所有种子都完成回传后自动退出，否则脚本会持续运行监测。
 
-```bash
-python main.py --seed_box_name <NAME> --home_dl_name <NAME> [--target_download_dir <DIR>] [--config_path <PATH>]
-```
+   注意，对于盒子下载器`seed_box`配置项内的`name`与`downloaders`配置项内的`name`必须一致时，脚本才能正常工作。`torrents_path`是盒子上的种子文件存放路径，对于大部分盒子，这个路径通常是 `/home/{username}/.local/share/qBittorrent/BT_backup`。`incoming_port`是盒子的传入端口，如果没有配置`bt_trackers`，那么请确保传入端口可正确，而不是随机。
 
-**参数说明:**
+  `downloaders`配置项内`want_torrent_category`对于本地下载器不需要配置。
 
-- `--seed_box_name`: (必填) 种子盒子名称。
-- `--home_dl_name`: (必填) 目标的家宽下载器名称。
-- `--target_download_dir`: (选填) 目标下载目录。
-- `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
+2. **运行程序**
+   使用 `main.py` 启动程序，只需指定盒子名称和本地下载器名称（需与配置文件中一致）。
 
-**示例:**
+  **参数说明:**
 
-```bash
-python main.py --seed_box_name nc --home_dl_name home-qb --target_download_dir /downloads/temp
-```
+  - `--seed_box_name`: (必填) 盒子名称。
+  - `--home_dl_name`: (必填) 目标的家宽下载器名称。
+  - `--target_download_dir`: (选填) 目标下载目录，如果不配置，则默认使用家宽下载器的下载目录。
+  - `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
 
-### 2. 获取种子文件 (`fetch_torrent_file.py`) *实验性功能
 
-该脚本用于通过 SFTP 从种子盒子下载指定分类的种子文件。
+   ```bash
+   python main.py --seed_box_name remote-qb --home_dl_name home-qb --target_download_dir /Disk1/Downloads/seedbox
+   ```
 
-**命令格式:**
-
-```bash
-python fetch_torrent_file.py --seed_box_name <NAME> --category <CATEGORY> --torrent_dir <DIR> [--config_path <PATH>]
-```
-
-**参数说明:**
-
-- `--seed_box_name`: (必填) 种子盒子名称，需与配置文件中一致。
-- `--category`: (必填) 需要导出的种子分类。
-- `--torrent_dir`: (必填) 本地保存种子文件的目录。
-- `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
-
-**示例:**
-
-```bash
-python fetch_torrent_file.py --seed_box_name nc --category To --torrent_dir ./new_torrents
-```
+   程序启动后会自动：
+   - 扫描本地 `downloads` 目录下的种子。
+   - 转换并在本地 qBittorrent 添加 BT 任务。
+   - 监控盒子上的任务，自动回传完成的种子。
 
