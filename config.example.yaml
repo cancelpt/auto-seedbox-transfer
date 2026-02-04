@@ -1,0 +1,30 @@
+transfer:
+  original_torrent_path: ./downloads
+  bt_path: ../bt
+  torrent_info_path: torrent_info.json
+  max_once_add: 5
+  bt_trackers:
+  - http://tracker1
+  - http://tracker2
+
+seed_box:
+- name: remote-qb
+  ssh_host: 192.168.1.100
+  ipv6: 2001:db8::1
+  incoming_port: 60000
+  #    ssh_port: 22
+  ssh_user: root
+  ssh_password: YOUR_PASSWORD
+  torrents_path: /home/user/.local/share/qBittorrent/BT_backup
+
+downloaders:
+- name: home-qb
+  url: http://127.0.0.1:8080
+  username: admin
+  password: YOUR_PASSWORD
+  want_torrent_category: ExampleCategory
+
+- name: remote-qb
+  url: http://192.168.1.101:8080
+  username: admin
+  password: YOUR_PASSWORD
