@@ -28,9 +28,40 @@ def run_manager_loop(manager, name, interval, shutdown_event):
     logger.info(f"{name} loop stopped.")
 
 
+import sys
+import os
+from pathlib import Path
+
+def ensure_directory_exists(path_str):
+    """Ensure a directory exists, create it if not. Exit on failure."""
+    if not path_str:
+        return
+        
+    path = Path(path_str)
+    try:
+        if not path.exists():
+            logger.info(f"Directory does not exist, creating: {path.absolute()}")
+            path.mkdir(parents=True, exist_ok=True)
+        elif not path.is_dir():
+            logger.critical(f"Path exists but is not a directory: {path.absolute()}")
+            sys.exit(1)
+    except Exception as e:
+        logger.critical(f"Failed to create directory {path}: {e}")
+        sys.exit(1)
+
+
 def main(config_path, seed_box_name, home_dl_name, target_download_dir):
     # Load configuration
     config: Config = YAMLConfigHandler.load(config_path)
+    
+    # Validate and create directories
+    ensure_directory_exists(config.transfer.original_torrent_path)
+    ensure_directory_exists(config.transfer.bt_path)
+    
+    # Ensure torrent info path directory exists
+    torrent_info_path = Path(config.transfer.torrent_info_path)
+    if torrent_info_path.parent:
+        ensure_directory_exists(str(torrent_info_path.parent))
     
     # Initialize State Manager
     state_manager = StateManager(config.transfer.torrent_info_path)
