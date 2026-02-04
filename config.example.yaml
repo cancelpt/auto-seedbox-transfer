@@ -1,8 +1,21 @@
 transfer:
+  # 原始种子存放路径 (本地下载器映射出的路径)
   original_torrent_path: ./downloads
+  # 转换后的 BT 种子存放路径 (Relative to running dir)
   bt_path: ../bt
+  # 种子传输状态记录文件
   torrent_info_path: torrent_info.json
+  # 每次最大添加种子数
   max_once_add: 5
+  # 盒子 BT 种子添加时的分类
+  seed_box_bt_category: 'keep'
+  # 家宽 BT 种子添加时的分类
+  home_bt_category: 'BT'
+  # 家宽 临时原始种子分类
+  home_origin_temp_category: 'ORIGIN_TEMP'
+  # 家宽 原始种子分类
+  home_origin_category: 'ORIGIN'
+  # BT 种子使用的 tracker 列表
   bt_trackers:
   - http://tracker1
   - http://tracker2

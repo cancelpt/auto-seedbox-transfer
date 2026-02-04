@@ -10,6 +10,10 @@ class Transfer(BaseModel):
     torrent_info_path: str
     bt_trackers: List[str]
     max_once_add: int = 5
+    seed_box_bt_category: str = 'keep'
+    home_bt_category: str = 'BT'
+    home_origin_temp_category: str = 'ORIGIN_TEMP'
+    home_origin_category: str = 'ORIGIN'
 
 
 class SeedBox(BaseModel):
