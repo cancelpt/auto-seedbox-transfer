@@ -2,8 +2,10 @@ import threading
 import argparse
 import logging
 import time
+import sys
+import os
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-
 from managers.home_manager import HomeManager
 from managers.local_manager import LocalManager
 from managers.seedbox_manager import SeedBoxManager
@@ -28,23 +30,51 @@ def run_manager_loop(manager, name, interval, shutdown_event):
     logger.info(f"{name} loop stopped.")
 
 
+def ensure_directory_exists(path_str):
+    """Ensure a directory exists, create it if not. Exit on failure."""
+    if not path_str:
+        return
+        
+    path = Path(path_str)
+    try:
+        if not path.exists():
+            logger.info(f"Directory does not exist, creating: {path.absolute()}")
+            path.mkdir(parents=True, exist_ok=True)
+        elif not path.is_dir():
+            logger.critical(f"Path exists but is not a directory: {path.absolute()}")
+            sys.exit(1)
+    except Exception as e:
+        logger.critical(f"Failed to create directory {path}: {e}")
+        sys.exit(1)
+
+
 def main(config_path, seed_box_name, home_dl_name, target_download_dir):
     # Load configuration
     config: Config = YAMLConfigHandler.load(config_path)
     
+    # Validate and create directories
+    ensure_directory_exists(config.transfer.original_torrent_path)
+    ensure_directory_exists(config.transfer.bt_path)
+    
+    # Ensure torrent info path directory exists
+    torrent_info_path = Path(config.transfer.torrent_info_path)
+    if torrent_info_path.parent:
+        ensure_directory_exists(str(torrent_info_path.parent))
+    
     # Initialize State Manager
     state_manager = StateManager(config.transfer.torrent_info_path)
     
+    shutdown_event = threading.Event()
+    
     # Initialize Business Logic Managers
     local_manager = LocalManager(config, state_manager)
-    seedbox_manager = SeedBoxManager(config, state_manager, seed_box_name, home_dl_name)
+    seedbox_manager = SeedBoxManager(config, state_manager, seed_box_name, home_dl_name, shutdown_event)
     home_manager = HomeManager(config, state_manager, seed_box_name, home_dl_name, target_download_dir)
     
     logger.info(f"Starting Seedbox Transfer Helper...")
     logger.info(f"Seedbox: {seed_box_name}")
     logger.info(f"Home Downloader: {home_dl_name}")
     
-    shutdown_event = threading.Event()
     
     with ThreadPoolExecutor(max_workers=3) as executor:
         # Submit tasks with independent intervals
@@ -56,7 +86,7 @@ def main(config_path, seed_box_name, home_dl_name, target_download_dir):
         executor.submit(run_manager_loop, home_manager, "HomeManager", config.transfer.home_interval, shutdown_event)
         
         try:
-            while True:
+            while not shutdown_event.is_set():
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Shutdown signal received (Ctrl+C). Stopping threads...")
