@@ -66,7 +66,30 @@ downloaders:
 
 ## 使用说明
 
-### 1. 获取种子文件 (`fetch_torrent_file.py`)
+### 1. 种子盒子助手 (`seed_box_helper.py`)
+
+该脚本用于持续监控和管理种子状态，将盒子上的种子自动下载到本地下载器。
+
+**命令格式:**
+
+```bash
+python seed_box_helper.py --seed_box_name <NAME> --home_dl_name <NAME> [--target_download_dir <DIR>] [--config_path <PATH>]
+```
+
+**参数说明:**
+
+- `--seed_box_name`: (必填) 种子盒子名称。
+- `--home_dl_name`: (必填) 目标的家宽下载器名称。
+- `--target_download_dir`: (选填) 目标下载目录。
+- `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
+
+**示例:**
+
+```bash
+python seed_box_helper.py --seed_box_name nc --home_dl_name home-qb --target_download_dir /downloads/temp
+```
+
+### 2. 获取种子文件 (`fetch_torrent_file.py`) *实验性功能
 
 该脚本用于通过 SFTP 从种子盒子下载指定分类的种子文件。
 
@@ -89,25 +112,3 @@ python fetch_torrent_file.py --seed_box_name <NAME> --category <CATEGORY> --torr
 python fetch_torrent_file.py --seed_box_name nc --category To --torrent_dir ./new_torrents
 ```
 
-### 2. 种子盒子助手 (`seed_box_helper.py`)
-
-该脚本用于持续监控和管理种子状态，将盒子上的种子自动下载到本地下载器。
-
-**命令格式:**
-
-```bash
-python seed_box_helper.py --seed_box_name <NAME> --home_dl_name <NAME> [--target_download_dir <DIR>] [--config_path <PATH>]
-```
-
-**参数说明:**
-
-- `--seed_box_name`: (必填) 种子盒子名称。
-- `--home_dl_name`: (必填) 目标的家宽下载器名称。
-- `--target_download_dir`: (选填) 目标下载目录。
-- `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
-
-**示例:**
-
-```bash
-python seed_box_helper.py --seed_box_name nc --home_dl_name home-qb --target_download_dir /downloads/temp
-```
