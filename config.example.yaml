@@ -21,6 +21,8 @@ transfer:
   seedbox_interval: 60
   # 家宽信息获取间隔 (秒)
   home_interval: 30
+  # 是否自动从盒子下载种子文件 (True/False)
+  auto_dl_torrent_from_seedbox: False
   # BT 种子使用的 tracker 列表
   bt_trackers:
   - http://tracker1

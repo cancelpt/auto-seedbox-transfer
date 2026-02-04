@@ -1,11 +1,14 @@
 import logging
 import time
 
+import os
+from pathlib import Path
 from qbittorrentapi import Client, TorrentInfoList
 
 from managers.state_manager import StateManager
 from utils.config import Config, SeedBox
 from utils.downloader_utils import get_downloader_client, DownloaderHelper
+from utils.sftp_utils import SFTPClient
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,29 @@ class SeedBoxManager:
         
         add_torrent_count = 0
         max_once_add = self.config.transfer.max_once_add
+
+        # Collect torrents that need downloading
+        torrents_to_download = []
+        if self.config.transfer.auto_dl_torrent_from_seedbox:
+             for torrent in torrents:
+                 # Skip if category doesn't match
+                 if torrent.category != self.home_dl_config.want_torrent_category:
+                     continue
+                 
+                 # Check if exists in local state
+                 if self.state_manager.get(torrent.hash):
+                     continue
+                 
+                 # Check if exists locally (avoid double download if LocalManager hasn't scanned yet)
+                 local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent.hash}.torrent")
+                 if os.path.exists(local_path):
+                     continue
+
+                 torrents_to_download.append(torrent.hash)
+        
+        # Batch download if needed
+        if torrents_to_download:
+             self._batch_download_torrents_from_seedbox(torrents_to_download)
 
         for torrent in torrents:
             if add_torrent_count >= max_once_add:
@@ -107,3 +133,38 @@ class SeedBoxManager:
                 add_torrent_count += 1
             else:
                 logger.error(f"Failed to add BT torrent: {state.bt_hash}")
+
+    def _batch_download_torrents_from_seedbox(self, torrent_hashes: list):
+        """Batch download torrent files from seedbox via SFTP."""
+        if not torrent_hashes:
+            return
+
+        logger.info(f"Starting batch download for {len(torrent_hashes)} torrents from seedbox...")
+        sftp_client = None
+        try:
+            sftp_client = SFTPClient(
+                hostname=self.seed_box_config.ssh_host,
+                username=self.seed_box_config.ssh_user,
+                password=self.seed_box_config.ssh_password,
+                port=self.seed_box_config.ssh_port
+            )
+            sftp_client.connect()
+            
+            for torrent_hash in torrent_hashes:
+                try:
+                    remote_path = Path(self.seed_box_config.torrents_path) / f"{torrent_hash}.torrent"
+                    local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
+                    
+                    if os.path.exists(local_path):
+                        continue
+
+                    logger.info(f"Downloading torrent {torrent_hash} from seedbox...")
+                    sftp_client.download(remote_path.as_posix(), local_path)
+                except Exception as e:
+                    logger.error(f"Failed to download torrent {torrent_hash}: {e}")
+                    
+        except Exception as e:
+             logger.error(f"SFTP connection error: {e}")
+        finally:
+            if sftp_client:
+                sftp_client.close()
