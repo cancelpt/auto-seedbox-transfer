@@ -31,6 +31,9 @@ transfer:
   home_bt_category: 'BT'              # 家宽 BT 种子分类
   home_origin_temp_category: 'ORIGIN_TEMP' # 家宽 临时原始种子分类，在 BT 种子还没被移除时的原始种子分类
   home_origin_category: 'ORIGIN'      # 家宽 原始种子分类，在 BT 种子被移除后的原始种子分类，表示转移完成
+  local_interval: 30                  # 本地 BT 目录扫描间隔 (秒)
+  seedbox_interval: 60                # 盒子信息获取间隔 (秒)
+  home_interval: 30                   # 家宽信息获取间隔 (秒)
   bt_trackers:                        # BT 种子使用的 tracker 列表，请确保盒子和家宽都能正常访问
     - http://tracker1
     - http://tracker2
@@ -66,7 +69,30 @@ downloaders:
 
 ## 使用说明
 
-### 1. 获取种子文件 (`fetch_torrent_file.py`)
+### 1. 种子盒子助手 (`main.py`)
+
+该脚本用于持续监控和管理种子状态，将盒子上的种子自动下载到本地下载器。
+
+**命令格式:**
+
+```bash
+python main.py --seed_box_name <NAME> --home_dl_name <NAME> [--target_download_dir <DIR>] [--config_path <PATH>]
+```
+
+**参数说明:**
+
+- `--seed_box_name`: (必填) 种子盒子名称。
+- `--home_dl_name`: (必填) 目标的家宽下载器名称。
+- `--target_download_dir`: (选填) 目标下载目录。
+- `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
+
+**示例:**
+
+```bash
+python main.py --seed_box_name nc --home_dl_name home-qb --target_download_dir /downloads/temp
+```
+
+### 2. 获取种子文件 (`fetch_torrent_file.py`) *实验性功能
 
 该脚本用于通过 SFTP 从种子盒子下载指定分类的种子文件。
 
@@ -89,25 +115,3 @@ python fetch_torrent_file.py --seed_box_name <NAME> --category <CATEGORY> --torr
 python fetch_torrent_file.py --seed_box_name nc --category To --torrent_dir ./new_torrents
 ```
 
-### 2. 种子盒子助手 (`seed_box_helper.py`)
-
-该脚本用于持续监控和管理种子状态，将盒子上的种子自动下载到本地下载器。
-
-**命令格式:**
-
-```bash
-python seed_box_helper.py --seed_box_name <NAME> --home_dl_name <NAME> [--target_download_dir <DIR>] [--config_path <PATH>]
-```
-
-**参数说明:**
-
-- `--seed_box_name`: (必填) 种子盒子名称。
-- `--home_dl_name`: (必填) 目标的家宽下载器名称。
-- `--target_download_dir`: (选填) 目标下载目录。
-- `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
-
-**示例:**
-
-```bash
-python seed_box_helper.py --seed_box_name nc --home_dl_name home-qb --target_download_dir /downloads/temp
-```
