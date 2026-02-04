@@ -1,6 +1,5 @@
 import logging
-import time
-
+import threading
 import os
 from pathlib import Path
 from qbittorrentapi import Client, TorrentInfoList
@@ -14,11 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class SeedBoxManager:
-    def __init__(self, config: Config, state_manager: StateManager, seed_box_name: str, home_dl_name: str):
+    def __init__(self, config: Config, state_manager: StateManager, seed_box_name: str, home_dl_name: str, shutdown_event: threading.Event):
         self.config = config
         self.state_manager = state_manager
         self.seed_box_name = seed_box_name
         self.home_dl_name = home_dl_name
+        self.shutdown_event = shutdown_event
         self._init_configs()
 
     def _init_configs(self):
@@ -56,6 +56,15 @@ class SeedBoxManager:
         torrents: TorrentInfoList = seed_box_dl.torrents_info(status='completed')
         seed_box_torrent_hashes = [torrent.hash for torrent in torrents]
         
+        # Filter torrents by category first to check if we are truly "done" for this category
+        torrents = [t for t in torrents if t.category == self.home_dl_config.want_torrent_category]
+        
+        if not torrents:
+            if self.config.transfer.exit_on_finish:
+                logger.info(f"No torrents found in category '{self.home_dl_config.want_torrent_category}'. Exit on finish is enabled. Shutting down...")
+                self.shutdown_event.set()
+            return
+        
         add_torrent_count = 0
         max_once_add = self.config.transfer.max_once_add
 
@@ -63,9 +72,6 @@ class SeedBoxManager:
         torrents_to_download = []
         if self.config.transfer.auto_dl_torrent_from_seedbox:
              for torrent in torrents:
-                 # Skip if category doesn't match
-                 if torrent.category != self.home_dl_config.want_torrent_category:
-                     continue
                  
                  # Check if exists in local state
                  if self.state_manager.get(torrent.hash):
@@ -86,9 +92,6 @@ class SeedBoxManager:
             if add_torrent_count >= max_once_add:
                 logger.info(f"Seedbox max add limit reached ({max_once_add})")
                 break
-
-            if torrent.category != self.home_dl_config.want_torrent_category:
-                continue
 
             # Check if exists in local state
             state = self.state_manager.get(torrent.hash)

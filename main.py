@@ -2,8 +2,10 @@ import threading
 import argparse
 import logging
 import time
+import sys
+import os
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-
 from managers.home_manager import HomeManager
 from managers.local_manager import LocalManager
 from managers.seedbox_manager import SeedBoxManager
@@ -27,10 +29,6 @@ def run_manager_loop(manager, name, interval, shutdown_event):
             break
     logger.info(f"{name} loop stopped.")
 
-
-import sys
-import os
-from pathlib import Path
 
 def ensure_directory_exists(path_str):
     """Ensure a directory exists, create it if not. Exit on failure."""
@@ -66,16 +64,17 @@ def main(config_path, seed_box_name, home_dl_name, target_download_dir):
     # Initialize State Manager
     state_manager = StateManager(config.transfer.torrent_info_path)
     
+    shutdown_event = threading.Event()
+    
     # Initialize Business Logic Managers
     local_manager = LocalManager(config, state_manager)
-    seedbox_manager = SeedBoxManager(config, state_manager, seed_box_name, home_dl_name)
+    seedbox_manager = SeedBoxManager(config, state_manager, seed_box_name, home_dl_name, shutdown_event)
     home_manager = HomeManager(config, state_manager, seed_box_name, home_dl_name, target_download_dir)
     
     logger.info(f"Starting Seedbox Transfer Helper...")
     logger.info(f"Seedbox: {seed_box_name}")
     logger.info(f"Home Downloader: {home_dl_name}")
     
-    shutdown_event = threading.Event()
     
     with ThreadPoolExecutor(max_workers=3) as executor:
         # Submit tasks with independent intervals
@@ -87,7 +86,7 @@ def main(config_path, seed_box_name, home_dl_name, target_download_dir):
         executor.submit(run_manager_loop, home_manager, "HomeManager", config.transfer.home_interval, shutdown_event)
         
         try:
-            while True:
+            while not shutdown_event.is_set():
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Shutdown signal received (Ctrl+C). Stopping threads...")
