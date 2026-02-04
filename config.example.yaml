@@ -15,6 +15,12 @@ transfer:
   home_origin_temp_category: 'ORIGIN_TEMP'
   # 家宽 原始种子分类
   home_origin_category: 'ORIGIN'
+  # 本地 BT 目录扫描间隔 (秒)
+  local_interval: 30
+  # 盒子信息获取间隔 (秒)
+  seedbox_interval: 60
+  # 家宽信息获取间隔 (秒)
+  home_interval: 30
   # BT 种子使用的 tracker 列表
   bt_trackers:
   - http://tracker1

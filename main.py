@@ -13,14 +13,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-def run_manager_safely(manager, name):
-    """Run a manager's run method and log exceptions."""
-    try:
-        # logger.debug(f"Starting {name} task...")
-        manager.run()
-        # logger.debug(f"Finished {name} task.")
-    except Exception as e:
-        logger.error(f"Error in {name}: {e}")
+def run_manager_loop(manager, name, interval):
+    """Run a manager's run method safely in a loop."""
+    logger.info(f"Starting {name} loop with interval {interval}s")
+    while True:
+        try:
+            manager.run()
+        except Exception as e:
+            logger.error(f"Error in {name}: {e}")
+        time.sleep(interval)
 
 
 def main(config_path, seed_box_name, home_dl_name, target_download_dir):
@@ -40,23 +41,14 @@ def main(config_path, seed_box_name, home_dl_name, target_download_dir):
     logger.info(f"Home Downloader: {home_dl_name}")
     
     with ThreadPoolExecutor(max_workers=3) as executor:
-        while True:
-            futures = []
-            
-            # Submit tasks
-            futures.append(executor.submit(run_manager_safely, local_manager, "LocalManager"))
-            futures.append(executor.submit(run_manager_safely, seedbox_manager, "SeedBoxManager"))
-            futures.append(executor.submit(run_manager_safely, home_manager, "HomeManager"))
-            
-            # Wait for all tasks to complete (for this simplified loop version)
-            # You could also use as_completed or just fire and forget if they are truly independent loops
-            # But synchronizing via StateManager suggests waiting is safer to avoid race conditions on the lock excessively
-            for future in futures:
-                future.result()
-            
-            # Sleep interval
-            # logger.info("Cycle completed. Sleeping...")
-            time.sleep(10)
+        # Submit tasks with independent intervals
+        # Local manager
+        executor.submit(run_manager_loop, local_manager, "LocalManager", config.transfer.local_interval)
+        # Seedbox manager (Remote interactions)
+        executor.submit(run_manager_loop, seedbox_manager, "SeedBoxManager", config.transfer.seedbox_interval)
+        # Home manager
+        executor.submit(run_manager_loop, home_manager, "HomeManager", config.transfer.home_interval)
+
 
 
 if __name__ == '__main__':
