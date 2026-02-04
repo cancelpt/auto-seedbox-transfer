@@ -139,6 +139,20 @@ class TorrentFile:
             self.torrent_data[b'announce'] = announce_list[0].encode()
         self.trackers = announce_list
 
+    def add_trackers(self, new_trackers: list[str]):
+        """Add new trackers to the existing list."""
+        current_trackers = self.trackers if self.trackers else []
+        
+        # Filter duplicates (case sensitive check usually)
+        existing_set = set(current_trackers)
+        to_add = [t for t in new_trackers if t and t not in existing_set]
+        
+        if not to_add:
+            return
+
+        updated_trackers = current_trackers + to_add
+        self.change_announce(updated_trackers)
+
     def change_creation_date(self, date):
         self.torrent_data[b'creation date'] = date
         self.creation_date = date

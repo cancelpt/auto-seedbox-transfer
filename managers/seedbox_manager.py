@@ -1,6 +1,7 @@
 import logging
 import threading
 import os
+import re
 from pathlib import Path
 from qbittorrentapi import Client, TorrentInfoList
 
@@ -8,6 +9,7 @@ from managers.state_manager import StateManager
 from utils.config import Config, SeedBox
 from utils.downloader_utils import get_downloader_client, DownloaderHelper
 from utils.sftp_utils import SFTPClient
+from utils.torrent_utils import TorrentFile
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +70,10 @@ class SeedBoxManager:
         add_torrent_count = 0
         max_once_add = self.config.transfer.max_once_add
 
-        # Collect torrents that need downloading
-        torrents_to_download = []
+        # Collect torrents that need downloading (hash -> trackers list)
+        torrents_to_download = {}
         if self.config.transfer.auto_dl_torrent_from_seedbox:
              for torrent in torrents:
-                 
                  # Check if exists in local state
                  if self.state_manager.get(torrent.hash):
                      continue
@@ -82,7 +83,17 @@ class SeedBoxManager:
                  if os.path.exists(local_path):
                      continue
 
-                 torrents_to_download.append(torrent.hash)
+                 # Get trackers for this torrent
+                 try:
+                     trackers_info = torrent.trackers
+                     trackers_urls = [
+                        t.url for t in trackers_info if re.match(r"^(udp|http|https)://", t.url)
+                     ]
+                     torrents_to_download[torrent.hash] = trackers_urls
+                 except Exception as e:
+                     logger.warning(f"Failed to get trackers for {torrent.hash}: {e}")
+                     # Still try to download without trackers if fetch fails
+                     torrents_to_download[torrent.hash] = []
         
         # Batch download if needed
         if torrents_to_download:
@@ -137,12 +148,12 @@ class SeedBoxManager:
             else:
                 logger.error(f"Failed to add BT torrent: {state.bt_hash}")
 
-    def _batch_download_torrents_from_seedbox(self, torrent_hashes: list):
+    def _batch_download_torrents_from_seedbox(self, torrents_map: dict):
         """Batch download torrent files from seedbox via SFTP."""
-        if not torrent_hashes:
+        if not torrents_map:
             return
 
-        logger.info(f"Starting batch download for {len(torrent_hashes)} torrents from seedbox...")
+        logger.info(f"Starting batch download for {len(torrents_map)} torrents from seedbox...")
         sftp_client = None
         try:
             sftp_client = SFTPClient(
@@ -153,18 +164,43 @@ class SeedBoxManager:
             )
             sftp_client.connect()
             
-            for torrent_hash in torrent_hashes:
+            for torrent_hash, trackers in torrents_map.items():
+                temp_local_path = None
                 try:
                     remote_path = Path(self.seed_box_config.torrents_path) / f"{torrent_hash}.torrent"
-                    local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
+                    final_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
+                    temp_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent.tmp")
                     
-                    if os.path.exists(local_path):
+                    if os.path.exists(final_local_path):
                         continue
 
                     logger.info(f"Downloading torrent {torrent_hash} from seedbox...")
-                    sftp_client.download(remote_path.as_posix(), local_path)
+                    sftp_client.download(remote_path.as_posix(), temp_local_path)
+                    
+                    # Inject trackers
+                    if os.path.exists(temp_local_path):
+                        if trackers:
+                            logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
+                            try:
+                                t_file = TorrentFile(temp_local_path)
+                                t_file.add_trackers(trackers)
+                                t_file.save(temp_local_path)
+                            except Exception as e:
+                                logger.error(f"Failed to inject trackers for {torrent_hash}: {e}")
+                        
+                        # Rename to final name
+                        if os.path.exists(final_local_path):
+                             os.remove(final_local_path)
+                        os.rename(temp_local_path, final_local_path)
+                        logger.info(f"Successfully downloaded and processed: {final_local_path}")
                 except Exception as e:
-                    logger.error(f"Failed to download torrent {torrent_hash}: {e}")
+                    logger.error(f"Failed to download/process torrent {torrent_hash}: {e}")
+                    # Cleanup temp file if exists
+                    if temp_local_path and os.path.exists(temp_local_path):
+                        try:
+                            os.remove(temp_local_path)
+                        except:
+                            pass
                     
         except Exception as e:
              logger.error(f"SFTP connection error: {e}")
