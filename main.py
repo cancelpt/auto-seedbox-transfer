@@ -1,3 +1,4 @@
+import threading
 import argparse
 import logging
 import time
@@ -13,15 +14,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-def run_manager_loop(manager, name, interval):
+def run_manager_loop(manager, name, interval, shutdown_event):
     """Run a manager's run method safely in a loop."""
     logger.info(f"Starting {name} loop with interval {interval}s")
-    while True:
+    while not shutdown_event.is_set():
         try:
             manager.run()
         except Exception as e:
             logger.error(f"Error in {name}: {e}")
-        time.sleep(interval)
+        
+        if shutdown_event.wait(interval):
+            break
+    logger.info(f"{name} loop stopped.")
 
 
 def main(config_path, seed_box_name, home_dl_name, target_download_dir):
@@ -40,14 +44,23 @@ def main(config_path, seed_box_name, home_dl_name, target_download_dir):
     logger.info(f"Seedbox: {seed_box_name}")
     logger.info(f"Home Downloader: {home_dl_name}")
     
+    shutdown_event = threading.Event()
+    
     with ThreadPoolExecutor(max_workers=3) as executor:
         # Submit tasks with independent intervals
         # Local manager
-        executor.submit(run_manager_loop, local_manager, "LocalManager", config.transfer.local_interval)
+        executor.submit(run_manager_loop, local_manager, "LocalManager", config.transfer.local_interval, shutdown_event)
         # Seedbox manager (Remote interactions)
-        executor.submit(run_manager_loop, seedbox_manager, "SeedBoxManager", config.transfer.seedbox_interval)
+        executor.submit(run_manager_loop, seedbox_manager, "SeedBoxManager", config.transfer.seedbox_interval, shutdown_event)
         # Home manager
-        executor.submit(run_manager_loop, home_manager, "HomeManager", config.transfer.home_interval)
+        executor.submit(run_manager_loop, home_manager, "HomeManager", config.transfer.home_interval, shutdown_event)
+        
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Shutdown signal received (Ctrl+C). Stopping threads...")
+            shutdown_event.set()
 
 
 
