@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# IDEs
+.idea/
+.vscode/
+
+# System
+.DS_Store
+Thumbs.db
+
+# Project-specific
+config.yaml
+torrent_info.json
+downloads/
+bt/
