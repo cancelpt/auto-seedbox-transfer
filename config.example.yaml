@@ -23,6 +23,8 @@ transfer:
   home_interval: 30
   # 是否自动从盒子下载种子文件 (True/False)
   auto_dl_torrent_from_seedbox: False
+  # 当盒子没有待处理种子时是否自动退出 (True/False)
+  exit_on_finish: False
   # BT 种子使用的 tracker 列表
   bt_trackers:
   - http://tracker1
