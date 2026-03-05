@@ -24,6 +24,7 @@ class SFTPClient:
             logger.info("SFTP connection established.")
         except Exception as e:
             logger.error(f"Failed to connect to SFTP: {e}")
+            raise
 
     def upload(self, local_file, remote_file):
         """上传文件"""
