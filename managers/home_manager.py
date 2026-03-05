@@ -70,7 +70,7 @@ class HomeManager:
                 logger.info(f"Adding BT torrent to home downloader: {state.bt_hash}")
                 if 'Ok.' in home_dl.torrents_add(
                     torrent_files=state.bt_torrent_file_path,
-                    download_dir=self.target_download_dir,
+                    save_path=self.target_download_dir,
                     category=self.config.transfer.home_bt_category
                 ):
                     state.is_bt_in_home_dl = True
@@ -85,7 +85,7 @@ class HomeManager:
                     logger.info(f"BT torrent completed at home. Adding Origin torrent: {state.hash}")
                     if 'Ok.' in home_dl.torrents_add(
                         torrent_files=state.origin_torrent_file_path,
-                        download_dir=self.target_download_dir,
+                        save_path=self.target_download_dir,
                         category=self.config.transfer.home_origin_temp_category,
                         is_skip_checking=True
                     ):
