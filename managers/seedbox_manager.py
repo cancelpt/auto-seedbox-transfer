@@ -2,6 +2,7 @@ import logging
 import threading
 import os
 import re
+import time
 from pathlib import Path
 from qbittorrentapi import Client, TorrentInfoList
 
@@ -162,7 +163,18 @@ class SeedBoxManager:
                 password=self.seed_box_config.ssh_password,
                 port=self.seed_box_config.ssh_port
             )
-            sftp_client.connect()
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                try:
+                    sftp_client.connect()
+                    break
+                except Exception as e:
+                    if attempt == max_retries:
+                        logger.error(f"SFTP connection failed after {max_retries} attempts, giving up.")
+                        raise
+                    wait = 5 * (2 ** (attempt - 1))
+                    logger.warning(f"SFTP connection attempt {attempt}/{max_retries} failed: {e}. Retrying in {wait}s...")
+                    time.sleep(wait)
             
             for torrent_hash, trackers in torrents_map.items():
                 temp_local_path = None
