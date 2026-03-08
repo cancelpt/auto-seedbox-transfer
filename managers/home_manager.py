@@ -89,7 +89,9 @@ class HomeManager:
                         torrent_files=state.origin_torrent_file_path,
                         save_path=self.target_download_dir,
                         category=self.config.transfer.home_origin_temp_category,
-                        is_skip_checking=True
+                        is_skip_checking=True,
+                        is_paused=self.config.transfer.pause_after_add_origin,
+                        tags=self.config.transfer.home_origin_tags if self.config.transfer.home_origin_tags else None
                     )
                     # Do NOT set is_torrent_in_home_dl here - wait for Origin to fully complete
                 continue

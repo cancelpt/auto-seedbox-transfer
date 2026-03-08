@@ -14,6 +14,8 @@ class Transfer(BaseModel):
     home_bt_category: str = 'BT'
     home_origin_temp_category: str = 'ORIGIN_TEMP'
     home_origin_category: str = 'ORIGIN'
+    pause_after_add_origin: bool = False
+    home_origin_tags: str = ''
     local_interval: int = 30
     seedbox_interval: int = 60
     home_interval: int = 30

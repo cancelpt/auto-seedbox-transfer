@@ -15,6 +15,10 @@ transfer:
   home_origin_temp_category: 'ORIGIN_TEMP'
   # 家宽 原始种子分类
   home_origin_category: 'ORIGIN'
+  # 添加 原始种子后是否暂停做种
+  pause_after_add_origin: False
+  # 添加 原始种子后添加标签，如果不设置则不添加标签
+  home_origin_tags: ''
   # 本地 BT 目录扫描间隔 (秒)
   local_interval: 30
   # 盒子信息获取间隔 (秒)
