@@ -22,6 +22,7 @@ class SeedBoxManager:
         self.seed_box_name = seed_box_name
         self.home_dl_name = home_dl_name
         self.shutdown_event = shutdown_event
+        self._is_downloading = False
         self._init_configs()
 
     def _init_configs(self):
@@ -98,7 +99,12 @@ class SeedBoxManager:
         
         # Batch download if needed
         if torrents_to_download:
-             self._batch_download_torrents_from_seedbox(torrents_to_download)
+             download_thread = threading.Thread(
+                 target=self._batch_download_torrents_from_seedbox,
+                 args=(torrents_to_download,),
+                 daemon=True
+             )
+             download_thread.start()
 
         for torrent in torrents:
             if add_torrent_count >= max_once_add:
@@ -153,69 +159,77 @@ class SeedBoxManager:
         """Batch download torrent files from seedbox via SFTP."""
         if not torrents_map:
             return
-
-        logger.info(f"Starting batch download for {len(torrents_map)} torrents from seedbox...")
-        sftp_client = None
-        try:
-            sftp_client = SFTPClient(
-                hostname=self.seed_box_config.ssh_host,
-                username=self.seed_box_config.ssh_user,
-                password=self.seed_box_config.ssh_password,
-                port=self.seed_box_config.ssh_port
-            )
-            max_retries = 3
-            for attempt in range(1, max_retries + 1):
-                try:
-                    sftp_client.connect()
-                    break
-                except Exception as e:
-                    if attempt == max_retries:
-                        logger.error(f"SFTP connection failed after {max_retries} attempts, giving up.")
-                        raise
-                    wait = 5 * (2 ** (attempt - 1))
-                    logger.warning(f"SFTP connection attempt {attempt}/{max_retries} failed: {e}. Retrying in {wait}s...")
-                    time.sleep(wait)
             
-            for torrent_hash, trackers in torrents_map.items():
-                temp_local_path = None
-                try:
-                    remote_path = Path(self.seed_box_config.torrents_path) / f"{torrent_hash}.torrent"
-                    final_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
-                    temp_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent.tmp")
-                    
-                    if os.path.exists(final_local_path):
-                        continue
+        if self._is_downloading:
+            logger.info("A batch download is already in progress, skipping this run.")
+            return
 
-                    logger.info(f"Downloading torrent {torrent_hash} from seedbox...")
-                    sftp_client.download(remote_path.as_posix(), temp_local_path)
-                    
-                    # Inject trackers
-                    if os.path.exists(temp_local_path):
-                        if trackers:
-                            logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
-                            try:
-                                t_file = TorrentFile(temp_local_path)
-                                t_file.add_trackers(trackers)
-                                t_file.save(temp_local_path)
-                            except Exception as e:
-                                logger.error(f"Failed to inject trackers for {torrent_hash}: {e}")
+        self._is_downloading = True
+        try:
+            logger.info(f"Starting batch download for {len(torrents_map)} torrents from seedbox...")
+            sftp_client = None
+            try:
+                sftp_client = SFTPClient(
+                    hostname=self.seed_box_config.ssh_host,
+                    username=self.seed_box_config.ssh_user,
+                    password=self.seed_box_config.ssh_password,
+                    port=self.seed_box_config.ssh_port
+                )
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        sftp_client.connect()
+                        break
+                    except Exception as e:
+                        if attempt == max_retries:
+                            logger.error(f"SFTP connection failed after {max_retries} attempts, giving up.")
+                            raise
+                        wait = 5 * (2 ** (attempt - 1))
+                        logger.warning(f"SFTP connection attempt {attempt}/{max_retries} failed: {e}. Retrying in {wait}s...")
+                        time.sleep(wait)
+                
+                for torrent_hash, trackers in torrents_map.items():
+                    temp_local_path = None
+                    try:
+                        remote_path = Path(self.seed_box_config.torrents_path) / f"{torrent_hash}.torrent"
+                        final_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
+                        temp_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent.tmp")
                         
-                        # Rename to final name
                         if os.path.exists(final_local_path):
-                             os.remove(final_local_path)
-                        os.rename(temp_local_path, final_local_path)
-                        logger.info(f"Successfully downloaded and processed: {final_local_path}")
-                except Exception as e:
-                    logger.error(f"Failed to download/process torrent {torrent_hash}: {e}")
-                    # Cleanup temp file if exists
-                    if temp_local_path and os.path.exists(temp_local_path):
-                        try:
-                            os.remove(temp_local_path)
-                        except:
-                            pass
-                    
-        except Exception as e:
-             logger.error(f"SFTP connection error: {e}")
+                            continue
+
+                        logger.info(f"Downloading torrent {torrent_hash} from seedbox...")
+                        sftp_client.download(remote_path.as_posix(), temp_local_path)
+                        
+                        # Inject trackers
+                        if os.path.exists(temp_local_path):
+                            if trackers:
+                                logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
+                                try:
+                                    t_file = TorrentFile(temp_local_path)
+                                    t_file.add_trackers(trackers)
+                                    t_file.save(temp_local_path)
+                                except Exception as e:
+                                    logger.error(f"Failed to inject trackers for {torrent_hash}: {e}")
+                            
+                            # Rename to final name
+                            if os.path.exists(final_local_path):
+                                 os.remove(final_local_path)
+                            os.rename(temp_local_path, final_local_path)
+                            logger.info(f"Successfully downloaded and processed: {final_local_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to download/process torrent {torrent_hash}: {e}")
+                        # Cleanup temp file if exists
+                        if temp_local_path and os.path.exists(temp_local_path):
+                            try:
+                                os.remove(temp_local_path)
+                            except:
+                                pass
+                        
+            except Exception as e:
+                 logger.error(f"SFTP connection error: {e}")
+            finally:
+                if sftp_client:
+                    sftp_client.close()
         finally:
-            if sftp_client:
-                sftp_client.close()
+            self._is_downloading = False

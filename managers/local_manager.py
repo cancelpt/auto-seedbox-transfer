@@ -17,7 +17,7 @@ class LocalManager:
         self.config = config
         self.state_manager = state_manager
         self.bt_path = config.transfer.bt_path
-        self.bt_path = config.transfer.bt_path
+        self.failed_counts = {}
 
     def run(self):
         """Run local management tasks."""
@@ -39,8 +39,17 @@ class LocalManager:
             for file in files:
                 if file.endswith('.torrent'):
                     torrent_file_path = os.path.join(root, file)
+                    
+                    if self.failed_counts.get(torrent_file_path, 0) >= 3:
+                        continue
+                        
                     try:
                         torrent_file_info = TorrentFile(str(torrent_file_path))
+                        
+                        # Clear failure count on success
+                        if torrent_file_path in self.failed_counts:
+                            del self.failed_counts[torrent_file_path]
+                            
                         torrent_hash_to_info[torrent_file_info.info_hash] = torrent_file_info
 
                         # Check if already processed
@@ -51,7 +60,10 @@ class LocalManager:
                         self._convert_to_bt(torrent_file_info)
 
                     except Exception as e:
+                        self.failed_counts[torrent_file_path] = self.failed_counts.get(torrent_file_path, 0) + 1
                         logger.error(f"Failed to process torrent {torrent_file_path}: {e}")
+                        if self.failed_counts[torrent_file_path] >= 3:
+                            logger.warning(f"Skipping torrent {torrent_file_path} after 3 failed attempts.")
 
     def _convert_to_bt(self, torrent_file_info: TorrentFile):
         """Convert a single torrent to BT format."""
