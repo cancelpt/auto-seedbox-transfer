@@ -112,18 +112,22 @@ class TorrentFile:
                     file_path = PurePosixPath(temp_path) / path_str
                 temp_path = file_path
             self.files.append(self.File(
-                path=temp_path if isinstance(temp_path, str) else temp_path.as_posix(),
+                path=temp_path if isinstance(
+                    temp_path, str) else temp_path.as_posix(),
                 size=length,
-                name=temp_path if isinstance(temp_path, str) else temp_path.name
+                name=temp_path if isinstance(
+                    temp_path, str) else temp_path.name
             ))
 
         # comment
         self.comment = safe_decode(self.torrent_data.get(b'comment', b''))
 
-        self.source = safe_decode(self.torrent_data.get(b'info', {}).get(b'source', b''))
+        self.source = safe_decode(self.torrent_data.get(
+            b'info', {}).get(b'source', b''))
 
         # created by
-        self.created_by = safe_decode(self.torrent_data.get(b'created by', b''))
+        self.created_by = safe_decode(
+            self.torrent_data.get(b'created by', b''))
 
         # creation date
         self.creation_date = self.torrent_data.get(b'creation date', 0)
@@ -141,7 +145,9 @@ class TorrentFile:
             self.trackers = []
             for trackers_bytes in trackers_bytes_list:
                 for tracker in trackers_bytes:
-                    self.trackers.append(safe_decode(tracker))
+                    t_str = safe_decode(tracker).strip()
+                    if t_str:
+                        self.trackers.append(t_str)
 
         # tracker数量
         self.trackers_count = len(self.trackers)
@@ -150,24 +156,37 @@ class TorrentFile:
     def info_hash(self):
         if self._is_info_hash_calculated:
             return self._info_hash
-        self._info_hash = hashlib.sha1(bencodepy.encode(self.torrent_data.get(b'info'))).hexdigest()
+        self._info_hash = hashlib.sha1(bencodepy.encode(
+            self.torrent_data.get(b'info'))).hexdigest()
         return self._info_hash
 
     def change_announce(self, announce_list):
-        self.torrent_data[b'announce-list'] = [[x.encode()] for x in announce_list]
-        if len(announce_list) > 1:
-            self.torrent_data[b'announce'] = announce_list[0].encode()
-        self.trackers = announce_list
+        cleaned_list = [t.strip() for t in announce_list if t and t.strip()]
+        self.torrent_data[b'announce-list'] = [[x.encode()]
+                                               for x in cleaned_list]
+        if len(cleaned_list) > 0:
+            self.torrent_data[b'announce'] = cleaned_list[0].encode()
+        self.trackers = cleaned_list
 
     def add_trackers(self, new_trackers: list[str]):
         """Add new trackers to the existing list."""
-        current_trackers = self.trackers if self.trackers else []
-        
-        # Filter duplicates (case sensitive check usually)
+        current_trackers = [
+            t.strip() for t in self.trackers if t and t.strip()] if self.trackers else []
+
+        # Filter duplicates and empty strings
         existing_set = set(current_trackers)
-        to_add = [t for t in new_trackers if t and t not in existing_set]
-        
+        to_add = []
+        for t in new_trackers:
+            if t:
+                t_stripped = t.strip()
+                if t_stripped and t_stripped not in existing_set:
+                    to_add.append(t_stripped)
+                    existing_set.add(t_stripped)
+
         if not to_add:
+            # If no new ones to add, but we might have cleaned up current_trackers
+            if len(current_trackers) != (len(self.trackers) if self.trackers else 0):
+                self.change_announce(current_trackers)
             return
 
         updated_trackers = current_trackers + to_add
