@@ -59,70 +59,73 @@ class HomeManager:
         all_transfers = self.state_manager.get_all()
 
         for info_hash, state in all_transfers.items():
-            if add_torrent_count >= max_once_add:
-                break
-            
-            # Scenario 1: Add BT torrent to home if it's on seedbox but not at home
-            if (state.is_bt_in_seed_box and 
-                state.bt_hash not in home_dl_hashes and 
-                not state.is_torrent_in_home_dl):
+            try:
+                if add_torrent_count >= max_once_add:
+                    break
                 
-                logger.info(f"Adding BT torrent to home downloader: {state.bt_hash}")
-                if 'Ok.' in home_dl.torrents_add(
-                    torrent_files=state.bt_torrent_file_path,
-                    save_path=self.target_download_dir,
-                    category=self.config.transfer.home_bt_category
-                ):
-                    state.is_bt_in_home_dl = True
-                    self.state_manager.update(state)
-                    add_torrent_count += 1
-                continue
-
-            # Scenario 2: BT torrent is at home, Origin not yet added -> add Origin
-            if (state.bt_hash in home_dl_hashes and 
-                state.hash not in home_dl_hashes and
-                not state.is_torrent_in_home_dl):
-                is_completed = self._check_bt_completed(home_dl, state.bt_hash)
-                if is_completed:
-                    logger.info(f"BT torrent completed at home. Adding Origin torrent: {state.hash}")
-                    home_dl.torrents_add(
-                        torrent_files=state.origin_torrent_file_path,
+                # Scenario 1: Add BT torrent to home if it's on seedbox but not at home
+                if (state.is_bt_in_seed_box and 
+                    state.bt_hash not in home_dl_hashes and 
+                    not state.is_torrent_in_home_dl):
+                    
+                    logger.info(f"Adding BT torrent to home downloader: {state.bt_hash}")
+                    if 'Ok.' in home_dl.torrents_add(
+                        torrent_files=state.bt_torrent_file_path,
                         save_path=self.target_download_dir,
-                        category=self.config.transfer.home_origin_temp_category,
-                        is_skip_checking=True,
-                        is_paused=self.config.transfer.pause_after_add_origin,
-                        tags=self.config.transfer.home_origin_tags if self.config.transfer.home_origin_tags else None
-                    )
-                    # Do NOT set is_torrent_in_home_dl here - wait for Origin to fully complete
-                continue
-            
-            # Scenario 3: Origin is at home (Temporary), BT is also at home -> verify Origin completed, then delete BT
-            if state.hash in home_dl_hashes and state.bt_hash in home_dl_hashes:
-                 if not self._is_torrent_completed(home_dl, state.hash):
-                     # Origin not yet completed, wait
-                     continue
-                 logger.info(f"Origin completed and BT both found at home. Deleting BT: {state.bt_hash}")
-                 home_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
-                 
-                 # Set category to final and mark as synced
-                 home_dl.torrents_set_category(
-                     category=self.config.transfer.home_origin_category, 
-                     torrent_hashes=state.hash
-                 )
-                 state.is_torrent_in_home_dl = True
-                 self.state_manager.update(state)
-                 continue
+                        category=self.config.transfer.home_bt_category
+                    ):
+                        state.is_bt_in_home_dl = True
+                        self.state_manager.update(state)
+                        add_torrent_count += 1
+                    continue
 
-            # Scenario 4: Origin at home, BT not at home
-            if (state.hash in home_dl_hashes and 
-                state.bt_hash not in home_dl_hashes and 
-                not state.is_torrent_in_home_dl):
+                # Scenario 2: BT torrent is at home, Origin not yet added -> add Origin
+                if (state.bt_hash in home_dl_hashes and 
+                    state.hash not in home_dl_hashes and
+                    not state.is_torrent_in_home_dl):
+                    is_completed = self._check_bt_completed(home_dl, state.bt_hash)
+                    if is_completed:
+                        logger.info(f"BT torrent completed at home. Adding Origin torrent: {state.hash}")
+                        home_dl.torrents_add(
+                            torrent_files=state.origin_torrent_file_path,
+                            save_path=self.target_download_dir,
+                            category=self.config.transfer.home_origin_temp_category,
+                            is_skip_checking=True,
+                            is_paused=self.config.transfer.pause_after_add_origin,
+                            tags=self.config.transfer.home_origin_tags if self.config.transfer.home_origin_tags else None
+                        )
+                        # Do NOT set is_torrent_in_home_dl here - wait for Origin to fully complete
+                    continue
                 
-                # Only mark as synced after Origin is fully downloaded
-                # Note: Origin is a PT torrent, do not add peers or modify category
-                if self._is_torrent_completed(home_dl, state.hash):
-                    state.is_torrent_in_home_dl = True
-                    self.state_manager.update(state)
+                # Scenario 3: Origin is at home (Temporary), BT is also at home -> verify Origin completed, then delete BT
+                if state.hash in home_dl_hashes and state.bt_hash in home_dl_hashes:
+                     if not self._is_torrent_completed(home_dl, state.hash):
+                         # Origin not yet completed, wait
+                         continue
+                     logger.info(f"Origin completed and BT both found at home. Deleting BT: {state.bt_hash}")
+                     home_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
+                     
+                     # Set category to final and mark as synced
+                     home_dl.torrents_set_category(
+                         category=self.config.transfer.home_origin_category, 
+                         torrent_hashes=state.hash
+                     )
+                     state.is_torrent_in_home_dl = True
+                     self.state_manager.update(state)
+                     continue
+
+                # Scenario 4: Origin at home, BT not at home
+                if (state.hash in home_dl_hashes and 
+                    state.bt_hash not in home_dl_hashes and 
+                    not state.is_torrent_in_home_dl):
+                    
+                    # Only mark as synced after Origin is fully downloaded
+                    # Note: Origin is a PT torrent, do not add peers or modify category
+                    if self._is_torrent_completed(home_dl, state.hash):
+                        state.is_torrent_in_home_dl = True
+                        self.state_manager.update(state)
+            except Exception as e:
+                logger.error(f"Error processing torrent {info_hash} in HomeManager: {e}")
 
     def _is_torrent_completed(self, dl: Client, torrent_hash: str) -> bool:
         """Check if a torrent is fully downloaded (progress == 1)."""
