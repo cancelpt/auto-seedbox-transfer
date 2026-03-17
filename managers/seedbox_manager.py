@@ -75,21 +75,46 @@ class SeedBoxManager:
         torrents: TorrentInfoList = seed_box_dl.torrents_info(status="completed")
         seed_box_torrent_hashes = [torrent.hash for torrent in torrents]
 
-        # Filter torrents by category first to check if we are truly "done" for this category
-        torrents = [t for t in torrents if t.category == self.home_dl_config.want_torrent_category]
+        # Determine the set of managed categories for this run
+        want_cat = self.home_dl_config.want_torrent_category
+        managed_want_categories = {want_cat} if isinstance(want_cat, str) else set(want_cat or [])
+
+        # Filter torrents by category first to check if we are truly "done" for these category
+        torrents = [t for t in torrents if t.category in managed_want_categories]
+
+        # Filter by completion time if requested
+        if self.config.transfer.seed_box_ignore_complete_time > 0:
+            current_time = time.time()
+            threshold = self.config.transfer.seed_box_ignore_complete_time
+            torrents = [t for t in torrents if (current_time - t.completion_on) >= threshold]
 
         def check_exit_on_finish():
             if self.config.transfer.exit_on_finish:
-                # Check both origin and BT categories
-                managed_categories = [
-                    self.home_dl_config.want_torrent_category,
+                # Check all managed origin categories and the BT category
+                managed_categories = list(managed_want_categories) + [
                     self.config.transfer.seed_box_bt_category,
                 ]
                 for cat in managed_categories:
-                    if seed_box_dl.torrents_info(category=cat):
+                    cat_torrents = seed_box_dl.torrents_info(category=cat)
+                    if not cat_torrents:
+                        continue
+
+                    # If this is an origin category and we have an ignore threshold
+                    if cat in managed_want_categories and self.config.transfer.seed_box_ignore_complete_time > 0:
+                        current_time = time.time()
+                        threshold = self.config.transfer.seed_box_ignore_complete_time
+                        # Filter to see if there are any "matured" torrents
+                        eligible = [t for t in cat_torrents if (current_time - t.completion_on) >= threshold]
+                        if eligible:
+                            return False
+                    else:
+                        logger.info(f"Found torrent in category {cat}: {cat_torrents[0].name}")
+                        # For other categories (like BT temporary), any torrent prevents exit
                         return False
 
-                logger.info("All managed categories on seedbox are empty. Exit on finish is enabled. Shutting down...")
+                logger.info(
+                    "No eligible torrents left in managed categories. Exit on finish is enabled. Shutting down..."
+                )
                 self.shutdown_event.set()
                 return True
             return False
@@ -161,8 +186,18 @@ class SeedBoxManager:
                         seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=True)
 
                     if state.hash in seed_box_torrent_hashes:
-                        logger.info(f"Deleting completed Origin torrent from seedbox: {state.hash}")
-                        seed_box_dl.torrents_delete(torrent_hashes=state.hash, delete_files=True)
+                        if self.config.transfer.seed_box_keep_torrent:
+                            logger.info(
+                                f"Keeping Origin torrent on seedbox, changing category to \
+                                    '{self.config.transfer.seed_box_keep_torrent_category}': {state.hash}"
+                            )
+                            seed_box_dl.torrents_set_category(
+                                category=self.config.transfer.seed_box_keep_torrent_category,
+                                torrent_hashes=state.hash,
+                            )
+                        else:
+                            logger.info(f"Deleting completed Origin torrent from seedbox: {state.hash}")
+                            seed_box_dl.torrents_delete(torrent_hashes=state.hash, delete_files=True)
                     continue
 
                 # Logic: Add BT torrent to seedbox if not present
