@@ -5,17 +5,24 @@ transfer:
   bt_path: ../auto-seedbox-transfer-workspace/bt
   # 种子传输状态记录文件
   torrent_info_path: ../auto-seedbox-transfer-workspace/torrent_info.json
-  # 每次最大添加种子数
+  # 盒子每轮最大添加种子数
   max_once_add: 5
   # 盒子 BT 种子添加时的分类
-  seed_box_bt_category: 'keep'
+  seed_box_bt_category: 'BT'
+  # 不对完成时间小于该值的种子进行转移，单位为秒
+  seed_box_ignore_complete_time: 0
+  # 是否启用：转移完成后盒子上的种子不删种而是改分类（BT 种会删但不删数据）；
+  # 默认 False 直接删了
+  seed_box_keep_torrent: False
+  # 如果启用 seed_box_keep_torrent，则配置生效；不填或者空值，则删除原有分类
+  seed_box_keep_torrent_category: ''
   # 家宽 BT 种子添加时的分类
   home_bt_category: 'BT'
   # 家宽 临时原始种子分类
   home_origin_temp_category: 'ORIGIN_TEMP'
   # 家宽 原始种子分类
   home_origin_category: 'ORIGIN'
-  # 添加 原始种子后是否暂停做种
+  # 添加 原始种子后是否暂停做种，默认 False 即转移完成后就在本地继续做种
   pause_after_add_origin: False
   # 添加 原始种子后添加标签，如果不设置则不添加标签
   home_origin_tags: ''
@@ -49,7 +56,8 @@ downloaders:
   url: http://123.123.123.123:8080
   username: admin
   password: YOUR_QB_PASSWORD
-  # 需要回传的种子分类
+  # 需要回传的种子分类，允许多个分类
+  # want_torrent_category: ["To", "Too"]
   want_torrent_category: To
 
 - name: home-qb

@@ -11,6 +11,9 @@ class Transfer(BaseModel):
     bt_trackers: List[str]
     max_once_add: int = 5
     seed_box_bt_category: str = "keep"
+    seed_box_ignore_complete_time: int = 0
+    seed_box_keep_torrent: bool = False
+    seed_box_keep_torrent_category: str = ""
     home_bt_category: str = "BT"
     home_origin_temp_category: str = "ORIGIN_TEMP"
     home_origin_category: str = "ORIGIN"
@@ -39,7 +42,7 @@ class Downloader(BaseModel):
     url: str
     username: str
     password: str
-    want_torrent_category: str | None = None
+    want_torrent_category: str | List[str] | None = None
 
 
 class Config(BaseModel):

@@ -37,9 +37,19 @@ pip install -r requirements.txt
    cp config.example.yaml config.yaml
    ```
 
-   假设你盒子通过 Vertex 自动删种，并且**设置了`keep`和`To`分类的种子不会被删除**，其中`To`是你想**回传到本地下载器的种子分类**，那么配置`seed_box_bt_category`为`keep`用于临时 BT 种子分类，配置`want_torrent_category`为`To`用于回传的种子分类。
+   假设你盒子通过 Vertex 自动删种，并且**设置了`BT`和`To`分类的种子不会被删除**，其中`To`是你想**回传到本地下载器的种子分类**，那么配置`seed_box_bt_category`为`BT`用于临时 BT 种子分类，配置`want_torrent_category`为`To`用于回传的种子分类。
+   
+   `want_torrent_category  `: 支持单个字符串或列表（如 `["To", "Too"]`，或者就是`"To"`），脚本会监控这些分类下的所有种子。
+
+   `seed_box_ignore_complete_time`: 设置种子完成多长时间后才开始转移（单位：秒）。如果种子完成时间小于该值，将被忽略。如果此时没有其他可处理的种子，脚本会提前退出（需开启 `exit_on_finish`）。
+  
+   `seed_box_keep_torrent`: 默认为 `False`（转移后删除盒子上的原始种子）。如果设为 `True`，则不会删除，而是将其移动到 `seed_box_keep_torrent_category` 指定的分类，允许分类为`""`即空值，这样原始种子的分类会被删除。通常来说可以配合 Vertex 来自动删种这些已经转移的原始种子，并且延迟删种多混一些上传，直到 Vertex 的删种规则触发。
 
    BT 的 tracker 列表通常不是必须的，因为当你配置了`ssh host`和`incoming_port`时，脚本会**自动添加盒子的 peer 信息到本地下载器的每个 BT 种子**。
+
+   `pause_after_add_origin`: 默认为 `False`（添加原始种子后直接开始本地下载器做种）。如果设为 `True`，则添加原始种子后暂停，等待用户手动做种。
+
+   `home_origin_tags`: 默认不添加标签，如果你使用一些转移做种插件，它们通常要你配置转移做种的种子标签，此时可以配置这个选项。
 
    `home_origin_temp_category`和`home_origin_category`影响不大，选择你喜欢的分类即可，用于方便在本地下载器上区分哪些种子是由盒子回传的。
 
@@ -53,7 +63,7 @@ pip install -r requirements.txt
 
    `downloaders`配置项内`want_torrent_category`对于本地下载器不需要配置。
 
-2. **运行程序**
+1. **运行程序**
    
    使用 `main.py` 启动程序，只需指定盒子名称和本地下载器名称（需与配置文件中一致）。
 
