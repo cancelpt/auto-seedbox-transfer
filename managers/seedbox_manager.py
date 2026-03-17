@@ -16,28 +16,35 @@ logger = logging.getLogger(__name__)
 
 
 class SeedBoxManager:
-    def __init__(self, config: Config, state_manager: StateManager, seed_box_name: str, home_dl_name: str, shutdown_event: threading.Event):
+    def __init__(self, config: Config, state_manager: StateManager, seed_box_name: str, home_dl_name: str, shutdown_event: threading.Event, trigger_local=None, trigger_home=None):
         self.config = config
         self.state_manager = state_manager
         self.seed_box_name = seed_box_name
         self.home_dl_name = home_dl_name
         self.shutdown_event = shutdown_event
+        self.trigger_local = trigger_local
+        self.trigger_home = trigger_home
         self._is_downloading = False
         self._init_configs()
 
     def _init_configs(self):
         """Initialize configurations for seedbox and downloaders."""
-        self.seed_box_config = next(filter(lambda x: x.name == self.seed_box_name, self.config.seed_box), None)
+        self.seed_box_config = next(
+            filter(lambda x: x.name == self.seed_box_name, self.config.seed_box), None)
         if self.seed_box_config is None:
             raise ValueError(f"Seedbox config not found: {self.seed_box_name}")
 
-        self.seed_box_dl_config = next(filter(lambda x: x.name == self.seed_box_name, self.config.downloaders), None)
+        self.seed_box_dl_config = next(
+            filter(lambda x: x.name == self.seed_box_name, self.config.downloaders), None)
         if self.seed_box_dl_config is None:
-            raise ValueError(f"Seedbox downloader config not found: {self.seed_box_name}")
+            raise ValueError(
+                f"Seedbox downloader config not found: {self.seed_box_name}")
 
-        self.home_dl_config = next(filter(lambda x: x.name == self.home_dl_name, self.config.downloaders), None)
+        self.home_dl_config = next(
+            filter(lambda x: x.name == self.home_dl_name, self.config.downloaders), None)
         if self.home_dl_config is None:
-            raise ValueError(f"Home downloader config not found: {self.home_dl_name}")
+            raise ValueError(
+                f"Home downloader config not found: {self.home_dl_name}")
 
     def run(self):
         """Run seedbox management tasks."""
@@ -54,62 +61,84 @@ class SeedBoxManager:
             password=self.seed_box_dl_config.password
         )
         seed_box_dl: Client = seed_box_helper.client
-        
+
         # Get completed torrents
         # logger.info(f"Fetching torrent list from seedbox: {self.seed_box_dl_config.name}")
-        torrents: TorrentInfoList = seed_box_dl.torrents_info(status='completed')
+        torrents: TorrentInfoList = seed_box_dl.torrents_info(
+            status='completed')
         seed_box_torrent_hashes = [torrent.hash for torrent in torrents]
-        
+
         # Filter torrents by category first to check if we are truly "done" for this category
-        torrents = [t for t in torrents if t.category == self.home_dl_config.want_torrent_category]
-        
-        if not torrents:
+        torrents = [t for t in torrents if t.category ==
+                    self.home_dl_config.want_torrent_category]
+
+        def check_exit_on_finish():
             if self.config.transfer.exit_on_finish:
-                logger.info(f"No torrents found in category '{self.home_dl_config.want_torrent_category}'. Exit on finish is enabled. Shutting down...")
+                # Check both origin and BT categories
+                managed_categories = [
+                    self.home_dl_config.want_torrent_category,
+                    self.config.transfer.seed_box_bt_category
+                ]
+                for cat in managed_categories:
+                    if seed_box_dl.torrents_info(category=cat):
+                        return False
+
+                logger.info(
+                    "All managed categories on seedbox are empty. Exit on finish is enabled. Shutting down...")
                 self.shutdown_event.set()
+                return True
+            return False
+
+        if not torrents:
+            if check_exit_on_finish():
+                return
+            # If not exiting, but no origin torrents to process, we still return from this method
             return
-        
+
         add_torrent_count = 0
         max_once_add = self.config.transfer.max_once_add
 
         # Collect torrents that need downloading (hash -> trackers list)
         torrents_to_download = {}
         if self.config.transfer.auto_dl_torrent_from_seedbox:
-             for torrent in torrents:
-                 # Check if exists in local state
-                 if self.state_manager.get(torrent.hash):
-                     continue
-                 
-                 # Check if exists locally (avoid double download if LocalManager hasn't scanned yet)
-                 local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent.hash}.torrent")
-                 if os.path.exists(local_path):
-                     continue
+            for torrent in torrents:
+                # Check if exists in local state
+                if self.state_manager.get(torrent.hash):
+                    continue
 
-                 # Get trackers for this torrent
-                 try:
-                     trackers_info = torrent.trackers
-                     trackers_urls = [
+                # Check if exists locally (avoid double download if LocalManager hasn't scanned yet)
+                local_path = os.path.join(
+                    self.config.transfer.original_torrent_path, f"{torrent.hash}.torrent")
+                if os.path.exists(local_path):
+                    continue
+
+                # Get trackers for this torrent
+                try:
+                    trackers_info = torrent.trackers
+                    trackers_urls = [
                         t.url for t in trackers_info if re.match(r"^(udp|http|https)://", t.url)
-                     ]
-                     torrents_to_download[torrent.hash] = trackers_urls
-                 except Exception as e:
-                     logger.warning(f"Failed to get trackers for {torrent.hash}: {e}")
-                     # Still try to download without trackers if fetch fails
-                     torrents_to_download[torrent.hash] = []
-        
+                    ]
+                    torrents_to_download[torrent.hash] = trackers_urls
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to get trackers for {torrent.hash}: {e}")
+                    # Still try to download without trackers if fetch fails
+                    torrents_to_download[torrent.hash] = []
+
         # Batch download if needed
         if torrents_to_download:
-             download_thread = threading.Thread(
-                 target=self._batch_download_torrents_from_seedbox,
-                 args=(torrents_to_download,),
-                 daemon=True
-             )
-             download_thread.start()
+            download_thread = threading.Thread(
+                target=self._batch_download_torrents_from_seedbox,
+                args=(torrents_to_download,),
+                daemon=True
+            )
+            download_thread.start()
 
         for torrent in torrents:
             try:
                 if add_torrent_count >= max_once_add:
-                    logger.info(f"Seedbox max add limit reached ({max_once_add})")
+                    logger.info(
+                        f"Seedbox max add limit reached ({max_once_add})")
                     break
 
                 # Check if exists in local state
@@ -125,51 +154,69 @@ class SeedBoxManager:
                 # Logic: If already in home downloader, delete from seedbox
                 if state.is_torrent_in_home_dl:
                     if state.bt_hash in seed_box_torrent_hashes:
-                        logger.info(f"Deleting completed BT torrent from seedbox: {state.bt_hash}")
-                        seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=True)
-                    
+                        logger.info(
+                            f"Deleting completed BT torrent from seedbox: {state.bt_hash}")
+                        seed_box_dl.torrents_delete(
+                            torrent_hashes=state.bt_hash, delete_files=True)
+
                     if state.hash in seed_box_torrent_hashes:
-                        logger.info(f"Deleting completed Origin torrent from seedbox: {state.hash}")
-                        seed_box_dl.torrents_delete(torrent_hashes=state.hash, delete_files=True)
+                        logger.info(
+                            f"Deleting completed Origin torrent from seedbox: {state.hash}")
+                        seed_box_dl.torrents_delete(
+                            torrent_hashes=state.hash, delete_files=True)
                     continue
 
                 # Logic: Add BT torrent to seedbox if not present
                 if state.bt_hash in seed_box_torrent_hashes:
                     if not state.is_bt_in_seed_box:
-                        logger.info(f"BT torrent found on seedbox, updating state: {state.bt_hash}")
+                        logger.info(
+                            f"BT torrent found on seedbox, updating state: {state.bt_hash}")
                         state.is_bt_in_seed_box = True
                         self.state_manager.update(state)
                     continue
 
                 # Add BT torrent
-                logger.info(f"Adding BT torrent to seedbox: {torrent.name}, {torrent.save_path}")
+                logger.info(
+                    f"Adding BT torrent to seedbox: {torrent.name}, {torrent.save_path}")
                 if 'Ok.' in seed_box_dl.torrents_add(
                     torrent_files=state.bt_torrent_file_path,
                     category=self.config.transfer.seed_box_bt_category,
                     is_skip_checking=True,
                     save_path=torrent.save_path
                 ):
-                    logger.info(f"Successfully added BT torrent: {state.bt_hash}")
+                    logger.info(
+                        f"Successfully added BT torrent: {state.bt_hash}")
                     state.is_bt_in_seed_box = True
                     self.state_manager.update(state)
                     add_torrent_count += 1
+
+                    # Trigger home manager to check for this new torrent
+                    if self.trigger_home:
+                        self.trigger_home.set()
                 else:
-                    logger.error(f"Failed to add BT torrent: {state.bt_hash}")
+                    logger.error(
+                        f"Failed to add BT torrent: {state.bt_hash}")
             except Exception as e:
-                logger.error(f"Error processing torrent {torrent.hash} ({torrent.name}) in SeedBoxManager: {e}")
+                logger.error(
+                    f"Error processing torrent {torrent.hash} ({torrent.name}) in SeedBoxManager: {e}")
+
+        # After processing all torrents, check if we should exit on finish
+        check_exit_on_finish()
 
     def _batch_download_torrents_from_seedbox(self, torrents_map: dict):
         """Batch download torrent files from seedbox via SFTP."""
         if not torrents_map:
             return
-            
+
         if self._is_downloading:
-            logger.info("A batch download is already in progress, skipping this run.")
+            logger.info(
+                "A batch download is already in progress, skipping this run.")
             return
 
         self._is_downloading = True
         try:
-            logger.info(f"Starting batch download for {len(torrents_map)} torrents from seedbox...")
+            logger.info(
+                f"Starting batch download for {len(torrents_map)} torrents from seedbox...")
             sftp_client = None
             try:
                 sftp_client = SFTPClient(
@@ -185,52 +232,67 @@ class SeedBoxManager:
                         break
                     except Exception as e:
                         if attempt == max_retries:
-                            logger.error(f"SFTP connection failed after {max_retries} attempts, giving up.")
+                            logger.error(
+                                f"SFTP connection failed after {max_retries} attempts, giving up.")
                             raise
                         wait = 5 * (2 ** (attempt - 1))
-                        logger.warning(f"SFTP connection attempt {attempt}/{max_retries} failed: {e}. Retrying in {wait}s...")
+                        logger.warning(
+                            f"SFTP connection attempt {attempt}/{max_retries} failed: {e}. Retrying in {wait}s...")
                         time.sleep(wait)
-                
+
                 for torrent_hash, trackers in torrents_map.items():
                     temp_local_path = None
                     try:
-                        remote_path = Path(self.seed_box_config.torrents_path) / f"{torrent_hash}.torrent"
-                        final_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
-                        temp_local_path = os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent.tmp")
-                        
+                        remote_path = Path(
+                            self.seed_box_config.torrents_path) / f"{torrent_hash}.torrent"
+                        final_local_path = os.path.join(
+                            self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
+                        temp_local_path = os.path.join(
+                            self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent.tmp")
+
                         if os.path.exists(final_local_path):
                             continue
 
-                        logger.info(f"Downloading torrent {torrent_hash} from seedbox...")
-                        sftp_client.download(remote_path.as_posix(), temp_local_path)
-                        
+                        logger.info(
+                            f"Downloading torrent {torrent_hash} from seedbox...")
+                        sftp_client.download(
+                            remote_path.as_posix(), temp_local_path)
+
                         # Inject trackers
                         if os.path.exists(temp_local_path):
                             if trackers:
-                                logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
+                                logger.info(
+                                    f"Injecting {len(trackers)} trackers into {torrent_hash}")
                                 try:
                                     t_file = TorrentFile(temp_local_path)
                                     t_file.add_trackers(trackers)
                                     t_file.save(temp_local_path)
                                 except Exception as e:
-                                    logger.error(f"Failed to inject trackers for {torrent_hash}: {e}")
-                            
+                                    logger.error(
+                                        f"Failed to inject trackers for {torrent_hash}: {e}")
+
                             # Rename to final name
                             if os.path.exists(final_local_path):
-                                 os.remove(final_local_path)
+                                os.remove(final_local_path)
                             os.rename(temp_local_path, final_local_path)
-                            logger.info(f"Successfully downloaded and processed: {final_local_path}")
+                            logger.info(
+                                f"Successfully downloaded and processed: {final_local_path}")
                     except Exception as e:
-                        logger.error(f"Failed to download/process torrent {torrent_hash}: {e}")
+                        logger.error(
+                            f"Failed to download/process torrent {torrent_hash}: {e}")
                         # Cleanup temp file if exists
                         if temp_local_path and os.path.exists(temp_local_path):
                             try:
                                 os.remove(temp_local_path)
                             except:
                                 pass
-                        
+
+                # After finishing a batch, trigger LocalManager to scan
+                if self.trigger_local:
+                    self.trigger_local.set()
+
             except Exception as e:
-                 logger.error(f"SFTP connection error: {e}")
+                logger.error(f"SFTP connection error: {e}")
             finally:
                 if sftp_client:
                     sftp_client.close()
