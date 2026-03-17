@@ -10,12 +10,12 @@ class Transfer(BaseModel):
     torrent_info_path: str
     bt_trackers: List[str]
     max_once_add: int = 5
-    seed_box_bt_category: str = 'keep'
-    home_bt_category: str = 'BT'
-    home_origin_temp_category: str = 'ORIGIN_TEMP'
-    home_origin_category: str = 'ORIGIN'
+    seed_box_bt_category: str = "keep"
+    home_bt_category: str = "BT"
+    home_origin_temp_category: str = "ORIGIN_TEMP"
+    home_origin_category: str = "ORIGIN"
     pause_after_add_origin: bool = False
-    home_origin_tags: str = ''
+    home_origin_tags: str = ""
     local_interval: int = 30
     seedbox_interval: int = 60
     home_interval: int = 30
@@ -51,6 +51,6 @@ class Config(BaseModel):
 class YAMLConfigHandler:
     @staticmethod
     def load(config_path: str) -> Config:
-        with open(config_path, 'r', encoding='utf-8') as file:
+        with open(config_path, "r", encoding="utf-8") as file:
             config_data = yaml.safe_load(file)
             return Config(**config_data)

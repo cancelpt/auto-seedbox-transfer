@@ -2,7 +2,7 @@ import inspect
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 import click
 
@@ -14,9 +14,7 @@ level_name_colors = {
     logging.INFO: lambda level_name: click.style(str(level_name), fg="green"),
     logging.WARNING: lambda level_name: click.style(str(level_name), fg="yellow"),
     logging.ERROR: lambda level_name: click.style(str(level_name), fg="red"),
-    logging.CRITICAL: lambda level_name: click.style(
-        str(level_name), fg="bright_red"
-    ),
+    logging.CRITICAL: lambda level_name: click.style(str(level_name), fg="bright_red"),
 }
 
 
@@ -35,6 +33,7 @@ class LoggerManager:
     """
     日志管理
     """
+
     # 管理所有的Logger
     _loggers: Dict[str, Any] = {}
     # 默认日志文件
@@ -98,17 +97,19 @@ class LoggerManager:
 
         # 终端日志
         console_handler = logging.StreamHandler()
-        console_formatter = CustomFormatter(f"%(leveltext)s%(message)s")
+        console_formatter = CustomFormatter("%(leveltext)s%(message)s")
         console_handler.setFormatter(console_formatter)
         _logger.addHandler(console_handler)
 
         # 文件日志
-        file_handler = RotatingFileHandler(filename=log_file_path,
-                                           mode='w',
-                                           maxBytes=5 * 1024 * 1024,
-                                           backupCount=3,
-                                           encoding='utf-8')
-        file_formater = CustomFormatter(f"【%(levelname)s】%(asctime)s - %(message)s")
+        file_handler = RotatingFileHandler(
+            filename=log_file_path,
+            mode="w",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        file_formater = CustomFormatter("【%(levelname)s】%(asctime)s - %(message)s")
         file_handler.setFormatter(file_formater)
         _logger.addHandler(file_handler)
 

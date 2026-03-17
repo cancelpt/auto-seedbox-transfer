@@ -1,7 +1,7 @@
 import logging
+from urllib import parse
 
 import qbittorrentapi
-from urllib import parse
 
 logger = logging.getLogger(__name__)
 
