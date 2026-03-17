@@ -139,7 +139,7 @@ class TorrentFile:
         self.announce = safe_decode(self.torrent_data.get(b'announce', b''))
 
         if not trackers_bytes_list:
-            self.trackers = [self.announce]
+            self.trackers = [self.announce] if self.announce else []
 
         else:
             self.trackers = []
@@ -162,10 +162,12 @@ class TorrentFile:
 
     def change_announce(self, announce_list):
         cleaned_list = [t.strip() for t in announce_list if t and t.strip()]
-        self.torrent_data[b'announce-list'] = [[x.encode()]
-                                               for x in cleaned_list]
-        if len(cleaned_list) > 0:
+        if cleaned_list:
+            self.torrent_data[b'announce-list'] = [
+                [x.encode() for x in cleaned_list]]
             self.torrent_data[b'announce'] = cleaned_list[0].encode()
+        else:
+            self.torrent_data[b'announce-list'] = []
         self.trackers = cleaned_list
 
     def add_trackers(self, new_trackers: list[str]):
