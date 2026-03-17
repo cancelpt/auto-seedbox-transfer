@@ -34,6 +34,7 @@ class SeedBoxManager:
         self.shutdown_event = shutdown_event
         self.trigger_local = trigger_local
         self.trigger_home = trigger_home
+        self.failed_counts = {}
         self._is_downloading = False
         self._init_configs()
 
@@ -169,6 +170,10 @@ class SeedBoxManager:
                     logger.info(f"Seedbox max add limit reached ({max_once_add})")
                     break
 
+                # Check failure count
+                if self.failed_counts.get(torrent.hash, 0) >= 3:
+                    continue
+
                 # Check if exists in local state
                 state = self.state_manager.get(torrent.hash)
                 if not state:
@@ -221,11 +226,16 @@ class SeedBoxManager:
                     self.state_manager.update(state)
                     add_torrent_count += 1
 
+                    # Reset failure count on success
+                    if torrent.hash in self.failed_counts:
+                        del self.failed_counts[torrent.hash]
+
                     # Trigger home manager to check for this new torrent
                     if self.trigger_home:
                         self.trigger_home.set()
                 else:
                     logger.error(f"Failed to add BT torrent: {state.bt_hash}")
+                    self.failed_counts[torrent.hash] = self.failed_counts.get(torrent.hash, 0) + 1
             except Exception as e:
                 logger.error(f"Error processing torrent {torrent.hash} ({torrent.name}) in SeedBoxManager: {e}")
 
