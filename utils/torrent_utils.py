@@ -13,6 +13,26 @@ import bencodepy
 logging.basicConfig(level=logging.INFO)
 
 
+def safe_decode(b_str: bytes | str) -> str:
+    if isinstance(b_str, str):
+        return b_str
+    if not isinstance(b_str, bytes):
+        return str(b_str)
+    try:
+        return b_str.decode('utf-8')
+    except UnicodeDecodeError:
+        pass
+    try:
+        return b_str.decode('gbk')
+    except UnicodeDecodeError:
+        pass
+    try:
+        return b_str.decode('big5')
+    except UnicodeDecodeError:
+        pass
+    return b_str.decode('utf-8', errors='replace')
+
+
 class TorrentFile:
     @dataclass(frozen=True)
     class File:
@@ -57,7 +77,7 @@ class TorrentFile:
         info_dict = self.torrent_data.get(b'info', {})
 
         # 获取文件名
-        self.file_name = info_dict.get(b'name', b'unknown').decode()
+        self.file_name = safe_decode(info_dict.get(b'name', b'unknown'))
 
         # 是否是私有种子
         self.private = info_dict.get(b'private', False) == 1
@@ -85,7 +105,7 @@ class TorrentFile:
             # 将文件路径拼接成文件名 PurePosixPath(path1) / path2
             temp_path = None
             for p in path:
-                path_str = p.decode()
+                path_str = safe_decode(p)
                 if temp_path is None:
                     file_path = path_str
                 else:
@@ -98,12 +118,12 @@ class TorrentFile:
             ))
 
         # comment
-        self.comment = self.torrent_data.get(b'comment', b'').decode()
+        self.comment = safe_decode(self.torrent_data.get(b'comment', b''))
 
-        self.source = self.torrent_data.get(b'info', {}).get(b'source', b'').decode()
+        self.source = safe_decode(self.torrent_data.get(b'info', {}).get(b'source', b''))
 
         # created by
-        self.created_by = self.torrent_data.get(b'created by', b'').decode()
+        self.created_by = safe_decode(self.torrent_data.get(b'created by', b''))
 
         # creation date
         self.creation_date = self.torrent_data.get(b'creation date', 0)
@@ -112,7 +132,7 @@ class TorrentFile:
         trackers_bytes_list = self.torrent_data.get(b'announce-list', [])
 
         # announce
-        self.announce = self.torrent_data.get(b'announce', b'').decode()
+        self.announce = safe_decode(self.torrent_data.get(b'announce', b''))
 
         if not trackers_bytes_list:
             self.trackers = [self.announce]
@@ -121,7 +141,7 @@ class TorrentFile:
             self.trackers = []
             for trackers_bytes in trackers_bytes_list:
                 for tracker in trackers_bytes:
-                    self.trackers.append(tracker.decode())
+                    self.trackers.append(safe_decode(tracker))
 
         # tracker数量
         self.trackers_count = len(self.trackers)
