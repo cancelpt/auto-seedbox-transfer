@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I"]
+fixable = ["ALL"]
+unfixable = []
+extend-select = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
