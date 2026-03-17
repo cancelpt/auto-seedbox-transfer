@@ -107,53 +107,56 @@ class SeedBoxManager:
              download_thread.start()
 
         for torrent in torrents:
-            if add_torrent_count >= max_once_add:
-                logger.info(f"Seedbox max add limit reached ({max_once_add})")
-                break
+            try:
+                if add_torrent_count >= max_once_add:
+                    logger.info(f"Seedbox max add limit reached ({max_once_add})")
+                    break
 
-            # Check if exists in local state
-            state = self.state_manager.get(torrent.hash)
-            if not state:
-                # logger.debug(f"Torrent not in local state: {torrent.name}")
-                continue
+                # Check if exists in local state
+                state = self.state_manager.get(torrent.hash)
+                if not state:
+                    # logger.debug(f"Torrent not in local state: {torrent.name}")
+                    continue
 
-            # Check progress (double check completion)
-            if torrent.progress != 1:
-                continue
+                # Check progress (double check completion)
+                if torrent.progress != 1:
+                    continue
 
-            # Logic: If already in home downloader, delete from seedbox
-            if state.is_torrent_in_home_dl:
+                # Logic: If already in home downloader, delete from seedbox
+                if state.is_torrent_in_home_dl:
+                    if state.bt_hash in seed_box_torrent_hashes:
+                        logger.info(f"Deleting completed BT torrent from seedbox: {state.bt_hash}")
+                        seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=True)
+                    
+                    if state.hash in seed_box_torrent_hashes:
+                        logger.info(f"Deleting completed Origin torrent from seedbox: {state.hash}")
+                        seed_box_dl.torrents_delete(torrent_hashes=state.hash, delete_files=True)
+                    continue
+
+                # Logic: Add BT torrent to seedbox if not present
                 if state.bt_hash in seed_box_torrent_hashes:
-                    logger.info(f"Deleting completed BT torrent from seedbox: {state.bt_hash}")
-                    seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=True)
-                
-                if state.hash in seed_box_torrent_hashes:
-                    logger.info(f"Deleting completed Origin torrent from seedbox: {state.hash}")
-                    seed_box_dl.torrents_delete(torrent_hashes=state.hash, delete_files=True)
-                continue
+                    if not state.is_bt_in_seed_box:
+                        logger.info(f"BT torrent found on seedbox, updating state: {state.bt_hash}")
+                        state.is_bt_in_seed_box = True
+                        self.state_manager.update(state)
+                    continue
 
-            # Logic: Add BT torrent to seedbox if not present
-            if state.bt_hash in seed_box_torrent_hashes:
-                if not state.is_bt_in_seed_box:
-                    logger.info(f"BT torrent found on seedbox, updating state: {state.bt_hash}")
+                # Add BT torrent
+                logger.info(f"Adding BT torrent to seedbox: {torrent.name}, {torrent.save_path}")
+                if 'Ok.' in seed_box_dl.torrents_add(
+                    torrent_files=state.bt_torrent_file_path,
+                    category=self.config.transfer.seed_box_bt_category,
+                    is_skip_checking=True,
+                    save_path=torrent.save_path
+                ):
+                    logger.info(f"Successfully added BT torrent: {state.bt_hash}")
                     state.is_bt_in_seed_box = True
                     self.state_manager.update(state)
-                continue
-
-            # Add BT torrent
-            logger.info(f"Adding BT torrent to seedbox: {torrent.name}, {torrent.save_path}")
-            if 'Ok.' in seed_box_dl.torrents_add(
-                torrent_files=state.bt_torrent_file_path,
-                category=self.config.transfer.seed_box_bt_category,
-                is_skip_checking=True,
-                save_path=torrent.save_path
-            ):
-                logger.info(f"Successfully added BT torrent: {state.bt_hash}")
-                state.is_bt_in_seed_box = True
-                self.state_manager.update(state)
-                add_torrent_count += 1
-            else:
-                logger.error(f"Failed to add BT torrent: {state.bt_hash}")
+                    add_torrent_count += 1
+                else:
+                    logger.error(f"Failed to add BT torrent: {state.bt_hash}")
+            except Exception as e:
+                logger.error(f"Error processing torrent {torrent.hash} ({torrent.name}) in SeedBoxManager: {e}")
 
     def _batch_download_torrents_from_seedbox(self, torrents_map: dict):
         """Batch download torrent files from seedbox via SFTP."""
