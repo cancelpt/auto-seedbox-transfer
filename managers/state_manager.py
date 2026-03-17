@@ -21,7 +21,7 @@ class StateManager:
         with self.lock:
             if os.path.exists(self.transfer_file_path):
                 try:
-                    with open(self.transfer_file_path, 'r') as f:
+                    with open(self.transfer_file_path, "r") as f:
                         transfer_status_list: List[dict] = json.load(f)
 
                     for transfer_data in transfer_status_list:
@@ -40,7 +40,7 @@ class StateManager:
         with self.lock:
             try:
                 transfer_status_list = [transfer.dict() for transfer in self.transfer_status_dict.values()]
-                with open(self.transfer_file_path, 'w') as f:
+                with open(self.transfer_file_path, "w") as f:
                     json.dump(transfer_status_list, f)
             except Exception as e:
                 logger.error(f"Failed to save transfer file: {self.transfer_file_path} - {e}")

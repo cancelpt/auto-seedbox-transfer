@@ -1,6 +1,6 @@
-import os
-import paramiko
 import logging
+
+import paramiko
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class SFTPClient:
             logger.error(f"Failed to download file: {e}")
 
     def close(self):
-        """关闭 SFTP 连接 """
+        """关闭 SFTP 连接"""
         if self.sftp:
             self.sftp.close()
         if self.transport:

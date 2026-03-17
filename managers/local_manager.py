@@ -1,8 +1,6 @@
 import logging
 import os
 import shutil
-import time
-from typing import Optional
 
 from managers.state_manager import StateManager
 from transfer.torrent_transfer import TorrentTransfer
@@ -13,7 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 class LocalManager:
-    def __init__(self, config: Config, state_manager: StateManager, trigger_seedbox=None, trigger_home=None):
+    def __init__(
+        self,
+        config: Config,
+        state_manager: StateManager,
+        trigger_seedbox=None,
+        trigger_home=None,
+    ):
         self.config = config
         self.state_manager = state_manager
         self.bt_path = config.transfer.bt_path
@@ -39,7 +43,7 @@ class LocalManager:
 
         for root, dirs, files in os.walk(original_torrent_path):
             for file in files:
-                if file.endswith('.torrent'):
+                if file.endswith(".torrent"):
                     torrent_file_path = os.path.join(root, file)
 
                     if self.failed_counts.get(torrent_file_path, 0) >= 3:
@@ -62,38 +66,32 @@ class LocalManager:
                         self._convert_to_bt(torrent_file_info)
 
                     except Exception as e:
-                        self.failed_counts[torrent_file_path] = self.failed_counts.get(
-                            torrent_file_path, 0) + 1
-                        logger.error(
-                            f"Failed to process torrent {torrent_file_path}: {e}")
+                        self.failed_counts[torrent_file_path] = self.failed_counts.get(torrent_file_path, 0) + 1
+                        logger.error(f"Failed to process torrent {torrent_file_path}: {e}")
                         if self.failed_counts[torrent_file_path] >= 3:
-                            logger.warning(
-                                f"Skipping torrent {torrent_file_path} after 3 failed attempts.")
+                            logger.warning(f"Skipping torrent {torrent_file_path} after 3 failed attempts.")
 
     def _convert_to_bt(self, torrent_file_info: TorrentFile):
         """Convert a single torrent to BT format."""
         try:
             result, temp_bt_file_name, bt_torrent_file = export_as_torrent(
-                torrent_file_info.torrent_data,
-                self.config.transfer.bt_trackers
+                torrent_file_info.torrent_data, self.config.transfer.bt_trackers
             )
 
             if not result:
-                logger.error(
-                    f"Failed to export BT torrent: {torrent_file_info.file_path}")
+                logger.error(f"Failed to export BT torrent: {torrent_file_info.file_path}")
                 return
 
             bt_file_path = os.path.join(self.bt_path, temp_bt_file_name)
             shutil.move(temp_bt_file_name, bt_file_path)
 
-            logger.info(
-                f"Exported BT torrent: {bt_file_path}, hash: {bt_torrent_file.info_hash}")
+            logger.info(f"Exported BT torrent: {bt_file_path}, hash: {bt_torrent_file.info_hash}")
 
             transfer = TorrentTransfer(
                 hash=torrent_file_info.info_hash,
                 bt_hash=bt_torrent_file.info_hash,
                 origin_torrent_file_path=torrent_file_info.file_path,
-                bt_torrent_file_path=bt_file_path
+                bt_torrent_file_path=bt_file_path,
             )
             self.state_manager.update(transfer)
 
@@ -104,14 +102,12 @@ class LocalManager:
                 self.trigger_home.set()
 
         except Exception as e:
-            logger.error(
-                f"Exception converting to BT {torrent_file_info.file_path}: {e}")
+            logger.error(f"Exception converting to BT {torrent_file_info.file_path}: {e}")
 
     def _cleanup_deleted_torrents(self):
         """Remove entries from state if original file no longer exists."""
         all_transfers = self.state_manager.get_all()
         for info_hash, transfer in all_transfers.items():
             if not os.path.exists(transfer.origin_torrent_file_path):
-                logger.info(
-                    f"Original torrent missing, removing from state: {info_hash}")
+                logger.info(f"Original torrent missing, removing from state: {info_hash}")
                 self.state_manager.delete(info_hash)
