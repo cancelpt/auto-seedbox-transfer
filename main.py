@@ -12,11 +12,12 @@ from managers.seedbox_manager import SeedBoxManager
 from managers.state_manager import StateManager
 from utils.config import YAMLConfigHandler, Config
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def run_manager_loop(manager, name, interval, shutdown_event):
+def run_manager_loop(manager, name, interval, shutdown_event, trigger_event=None):
     """Run a manager's run method safely in a loop."""
     logger.info(f"Starting {name} loop with interval {interval}s")
     while not shutdown_event.is_set():
@@ -24,9 +25,19 @@ def run_manager_loop(manager, name, interval, shutdown_event):
             manager.run()
         except Exception as e:
             logger.error(f"Error in {name}: {e}")
-        
-        if shutdown_event.wait(interval):
-            break
+
+        # Wait for either the interval or a trigger event
+        if trigger_event:
+            # Wait for interval OR trigger. If trigger is set, wait returns True immediately.
+            # We clear the trigger immediately after waking up.
+            if shutdown_event.wait(timeout=interval):
+                break
+            if trigger_event.is_set():
+                logger.debug(f"{name} triggered immediately.")
+                trigger_event.clear()
+        else:
+            if shutdown_event.wait(interval):
+                break
     logger.info(f"{name} loop stopped.")
 
 
@@ -34,14 +45,16 @@ def ensure_directory_exists(path_str):
     """Ensure a directory exists, create it if not. Exit on failure."""
     if not path_str:
         return
-        
+
     path = Path(path_str)
     try:
         if not path.exists():
-            logger.info(f"Directory does not exist, creating: {path.absolute()}")
+            logger.info(
+                f"Directory does not exist, creating: {path.absolute()}")
             path.mkdir(parents=True, exist_ok=True)
         elif not path.is_dir():
-            logger.critical(f"Path exists but is not a directory: {path.absolute()}")
+            logger.critical(
+                f"Path exists but is not a directory: {path.absolute()}")
             sys.exit(1)
     except Exception as e:
         logger.critical(f"Failed to create directory {path}: {e}")
@@ -51,56 +64,74 @@ def ensure_directory_exists(path_str):
 def main(config_path, seed_box_name, home_dl_name, target_download_dir):
     # Load configuration
     config: Config = YAMLConfigHandler.load(config_path)
-    
+
     # Validate and create directories
     ensure_directory_exists(config.transfer.original_torrent_path)
     ensure_directory_exists(config.transfer.bt_path)
-    
+
     # Ensure torrent info path directory exists
     torrent_info_path = Path(config.transfer.torrent_info_path)
     if torrent_info_path.parent:
         ensure_directory_exists(str(torrent_info_path.parent))
-    
+
     # Initialize State Manager
     state_manager = StateManager(config.transfer.torrent_info_path)
-    
+
     shutdown_event = threading.Event()
-    
+
+    # Trigger events for cross-thread communication
+    trigger_local = threading.Event()
+    trigger_seedbox = threading.Event()
+    trigger_home = threading.Event()
+
     # Initialize Business Logic Managers
-    local_manager = LocalManager(config, state_manager)
-    seedbox_manager = SeedBoxManager(config, state_manager, seed_box_name, home_dl_name, shutdown_event)
-    home_manager = HomeManager(config, state_manager, seed_box_name, home_dl_name, target_download_dir)
-    
+    local_manager = LocalManager(
+        config, state_manager, trigger_seedbox=trigger_seedbox, trigger_home=trigger_home)
+    seedbox_manager = SeedBoxManager(
+        config, state_manager, seed_box_name, home_dl_name, shutdown_event,
+        trigger_local=trigger_local, trigger_home=trigger_home
+    )
+    home_manager = HomeManager(
+        config, state_manager, seed_box_name, home_dl_name, target_download_dir,
+        trigger_seedbox=trigger_seedbox
+    )
+
     logger.info(f"Starting Seedbox Transfer Helper...")
     logger.info(f"Seedbox: {seed_box_name}")
     logger.info(f"Home Downloader: {home_dl_name}")
-    
-    
+
     with ThreadPoolExecutor(max_workers=3) as executor:
         # Submit tasks with independent intervals
         # Local manager
-        executor.submit(run_manager_loop, local_manager, "LocalManager", config.transfer.local_interval, shutdown_event)
+        executor.submit(run_manager_loop, local_manager, "LocalManager",
+                        config.transfer.local_interval, shutdown_event, trigger_local)
         # Seedbox manager (Remote interactions)
-        executor.submit(run_manager_loop, seedbox_manager, "SeedBoxManager", config.transfer.seedbox_interval, shutdown_event)
+        executor.submit(run_manager_loop, seedbox_manager, "SeedBoxManager",
+                        config.transfer.seedbox_interval, shutdown_event, trigger_seedbox)
         # Home manager
-        executor.submit(run_manager_loop, home_manager, "HomeManager", config.transfer.home_interval, shutdown_event)
-        
+        executor.submit(run_manager_loop, home_manager, "HomeManager",
+                        config.transfer.home_interval, shutdown_event, trigger_home)
+
         try:
             while not shutdown_event.is_set():
                 time.sleep(1)
         except KeyboardInterrupt:
-            logger.info("Shutdown signal received (Ctrl+C). Stopping threads...")
+            logger.info(
+                "Shutdown signal received (Ctrl+C). Stopping threads...")
             shutdown_event.set()
-
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_path", type=str, default='config.yaml', help="配置文件路径")
-    parser.add_argument("--seed_box_name", type=str, required=True, help="种子盒子名称")
-    parser.add_argument("--home_dl_name", type=str, required=True, help="目标的家宽下载器名称")
+    parser.add_argument("--config_path", type=str,
+                        default='config.yaml', help="配置文件路径")
+    parser.add_argument("--seed_box_name", type=str,
+                        required=True, help="种子盒子名称")
+    parser.add_argument("--home_dl_name", type=str,
+                        required=True, help="目标的家宽下载器名称")
     parser.add_argument("--target_download_dir", type=str, help="目标下载目录")
 
     args = parser.parse_args()
 
-    main(args.config_path, args.seed_box_name, args.home_dl_name, args.target_download_dir)
+    main(args.config_path, args.seed_box_name,
+         args.home_dl_name, args.target_download_dir)
