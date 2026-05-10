@@ -57,6 +57,10 @@ pip install -r requirements.txt
 
    `exit_on_finish`设置为`True`时，脚本会在所有种子都完成回传后自动退出，否则脚本会持续运行监测。
 
+   脚本会复用 qBittorrent 登录会话，并优先通过 qBittorrent 的`sync/maindata`增量快照维护下载器状态；如果客户端或接口不支持增量同步，会自动回退到`torrents_info()`全量列表，保证兼容性。
+
+   脚本会把回传任务状态和相关失败次数持久化到`torrent_info_path`。对于盒子删种、远端`.torrent`文件丢失、添加 BT/原始种失败等异常情况，同一条已进入回传状态的任务连续失败 3 次后会被自动标记为跳过，避免无限重试；如需重新尝试，删除对应状态文件记录后再运行即可。开启`exit_on_finish`时，已标记跳过的任务不会阻止程序退出。
+
    注意，对于盒子下载器`seed_box`配置项内的`name`与`downloaders`配置项内的 **`name`必须一致时**，脚本才能正常工作。
    
    `torrents_path`是盒子上的**种子文件存放路径**，对于大部分盒子，这个路径通常是 `/home/{username}/.local/share/qBittorrent/BT_backup`。`incoming_port`是盒子的传入端口，**如果没有配置`bt_trackers`，那么请确保传入端口可正确，而不是随机**。
@@ -73,10 +77,17 @@ pip install -r requirements.txt
     - `--home_dl_name`: (必填) 目标的本地下载器名称。
     - `--target_download_dir`: (选填) 目标下载目录，如果不配置，则默认使用本地下载器的下载目录。
     - `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
+    - `--run_once`: (选填) 单次执行并退出，同时使用`{torrent_info_path}.lock`避免定时任务并发重复运行；适合放到 cron。脚本还会生成内部状态文件锁`{torrent_info_path}.state.lock`，这是正常的并发保护文件。
 
 
     ```bash
     python main.py --seed_box_name remote-qb --home_dl_name home-qb --target_download_dir /Disk1/Downloads/seedbox
+    ```
+
+    如果要放到定时任务里，推荐使用：
+
+    ```bash
+    python main.py --seed_box_name remote-qb --home_dl_name home-qb --target_download_dir /Disk1/Downloads/seedbox --run_once
     ```
 
     这里，`remote-qb`：盒子下载器名称，`home-qb`：本地下载器名称，`/Disk1/Downloads/seedbox`：回传的下载目录。
@@ -85,4 +96,3 @@ pip install -r requirements.txt
     - 扫描本地 `downloads` 目录下的种子。
     - 转换并在本地 qBittorrent 添加 BT 任务。
     - 监控盒子上的任务，自动回传完成的种子。
-

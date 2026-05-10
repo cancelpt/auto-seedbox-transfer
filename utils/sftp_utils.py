@@ -33,6 +33,7 @@ class SFTPClient:
             logger.info(f"Uploaded {local_file} to {remote_file}.")
         except Exception as e:
             logger.error(f"Failed to upload file: {e}")
+            raise
 
     def download(self, remote_file, local_file):
         """下载文件"""
@@ -41,6 +42,7 @@ class SFTPClient:
             logger.info(f"Downloaded {remote_file} to {local_file}.")
         except Exception as e:
             logger.error(f"Failed to download file: {e}")
+            raise
 
     def close(self):
         """关闭 SFTP 连接"""

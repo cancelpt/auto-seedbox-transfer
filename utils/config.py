@@ -1,4 +1,6 @@
-from typing import List
+from __future__ import annotations
+
+from typing import List, Optional, Union
 
 import yaml
 from pydantic import BaseModel
@@ -29,7 +31,7 @@ class Transfer(BaseModel):
 class SeedBox(BaseModel):
     name: str
     ssh_host: str
-    ipv6: str | None = None
+    ipv6: Optional[str] = None
     incoming_port: int
     ssh_port: int = 22
     ssh_user: str
@@ -42,7 +44,7 @@ class Downloader(BaseModel):
     url: str
     username: str
     password: str
-    want_torrent_category: str | List[str] | None = None
+    want_torrent_category: Optional[Union[str, List[str]]] = None
 
 
 class Config(BaseModel):
