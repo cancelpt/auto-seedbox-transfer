@@ -78,3 +78,29 @@ def test_local_manager_skips_reparsing_unchanged_torrent_when_state_already_exis
     manager.run()
 
     assert FakeTorrentFile.calls == 1
+
+
+def test_local_manager_logs_actionable_message_for_trailing_torrent_data(tmp_path, monkeypatch, caplog):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    torrent_path = Path(config.transfer.original_torrent_path) / "bad.torrent"
+    torrent_path.write_bytes(b"bad")
+
+    class TrailingTorrentFile:
+        def __init__(self, file_path):
+            raise local_manager_module.TorrentTrailingDataError(
+                file_path=str(file_path),
+                total_size=10,
+                valid_prefix_size=7,
+                original_error=ValueError("invalid bencoded value (data after valid prefix)"),
+            )
+
+    monkeypatch.setattr(local_manager_module, "TorrentFile", TrailingTorrentFile)
+
+    manager = LocalManager(config, StateManager(config.transfer.torrent_info_path))
+    manager.run()
+
+    assert manager.failed_counts[str(torrent_path)] == 1
+    assert "trailing data" in caplog.text
+    assert "Re-download this origin torrent from seedbox" in caplog.text

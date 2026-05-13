@@ -15,6 +15,76 @@ import bencodepy
 logging.basicConfig(level=logging.INFO)
 
 
+class TorrentTrailingDataError(Exception):
+    def __init__(self, file_path: str, total_size: int, valid_prefix_size: int, original_error: Exception):
+        self.file_path = file_path
+        self.total_size = total_size
+        self.valid_prefix_size = valid_prefix_size
+        self.trailing_size = total_size - valid_prefix_size
+        self.original_error = original_error
+        super().__init__(
+            f"种子文件 {file_path} 在有效 bencode 之后还有 {self.trailing_size} 字节尾随数据: {original_error}"
+        )
+
+
+def _parse_bencode_value_end(data: bytes, start: int) -> int:
+    if start >= len(data):
+        raise ValueError("unexpected end of bencode data")
+
+    token = data[start]
+    if token == ord("i"):
+        end = data.find(b"e", start + 1)
+        if end == -1:
+            raise ValueError("unterminated bencode integer")
+        number = data[start + 1 : end]
+        if not number:
+            raise ValueError("empty bencode integer")
+        return end + 1
+
+    if token in (ord("l"), ord("d")):
+        pos = start + 1
+        while True:
+            if pos >= len(data):
+                raise ValueError("unterminated bencode container")
+            if data[pos] == ord("e"):
+                return pos + 1
+            pos = _parse_bencode_value_end(data, pos)
+            if token == ord("d"):
+                pos = _parse_bencode_value_end(data, pos)
+
+    if ord("0") <= token <= ord("9"):
+        colon = data.find(b":", start)
+        if colon == -1:
+            raise ValueError("unterminated bencode bytes")
+        raw_length = data[start:colon]
+        if not raw_length:
+            raise ValueError("empty bencode bytes length")
+        length = int(raw_length)
+        end = colon + 1 + length
+        if end > len(data):
+            raise ValueError("bencode bytes exceed payload length")
+        return end
+
+    raise ValueError(f"invalid bencode token: {token}")
+
+
+def _detect_trailing_bencode_data(file_path: str, data: bytes, original_error: Exception) -> TorrentTrailingDataError | None:
+    try:
+        valid_prefix_size = _parse_bencode_value_end(data, 0)
+    except Exception:
+        return None
+
+    if valid_prefix_size >= len(data):
+        return None
+
+    try:
+        bencodepy.decode(data[:valid_prefix_size])
+    except Exception:
+        return None
+
+    return TorrentTrailingDataError(file_path, len(data), valid_prefix_size, original_error)
+
+
 def safe_decode(b_str: bytes | str) -> str:
     if isinstance(b_str, str):
         return b_str
@@ -63,9 +133,17 @@ class TorrentFile:
             else:
                 with open(torrent_file, "rb") as f:
                     data = f.read()
+                try:
                     self.torrent_data = bencodepy.decode(data)
+                except Exception as e:
+                    trailing_error = _detect_trailing_bencode_data(str(torrent_file), data, e)
+                    if trailing_error:
+                        raise trailing_error
+                    raise
         except FileNotFoundError:
             raise FileNotFoundError(f"种子文件 {torrent_file} 不存在")
+        except TorrentTrailingDataError:
+            raise
         except Exception as e:
             raise Exception(f"无法读取种子: {e}")
 

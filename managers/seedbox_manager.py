@@ -26,7 +26,7 @@ from utils.config import Config, SeedboxOriginDataMissingPolicy
 from utils.downloader_utils import DownloaderHelper, get_downloader_client
 from utils.qbittorrent_snapshot import QbittorrentSnapshot
 from utils.sftp_utils import SFTPClient
-from utils.torrent_utils import TorrentFile
+from utils.torrent_utils import TorrentFile, TorrentTrailingDataError
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,22 @@ class SeedBoxManager:
 
     def _local_torrent_path(self, torrent_hash: str) -> str:
         return os.path.join(self.config.transfer.original_torrent_path, f"{torrent_hash}.torrent")
+
+    def _local_torrent_is_usable(self, torrent_path: str) -> bool:
+        if not os.path.exists(torrent_path):
+            return False
+        try:
+            TorrentFile(torrent_path)
+            return True
+        except TorrentTrailingDataError as e:
+            logger.warning(
+                "Local origin torrent has trailing bencode data and will be re-downloaded from seedbox: "
+                f"{torrent_path} ({e.trailing_size} trailing bytes)"
+            )
+            return False
+        except Exception as e:
+            logger.warning(f"Local origin torrent is unreadable and will be re-downloaded from seedbox: {torrent_path}: {e}")
+            return False
 
     def _get_or_create_transfer(self, torrent_hash: str) -> TorrentTransfer:
         state = self.state_manager.get(torrent_hash)
@@ -352,7 +368,7 @@ class SeedBoxManager:
 
                 # Check if exists locally (avoid double download if LocalManager hasn't scanned yet)
                 local_path = self._local_torrent_path(torrent.hash)
-                if os.path.exists(local_path):
+                if self._local_torrent_is_usable(local_path):
                     continue
 
                 self._get_or_create_transfer(torrent.hash)
@@ -587,7 +603,7 @@ class SeedBoxManager:
                             f"{torrent_hash}.torrent.tmp",
                         )
 
-                        if os.path.exists(final_local_path):
+                        if self._local_torrent_is_usable(final_local_path):
                             state.origin_torrent_file_path = final_local_path
                             state.reset_failures("download_retry_count", "missing_origin_retry_count")
                             self.state_manager.update(state)
@@ -598,14 +614,20 @@ class SeedBoxManager:
 
                         # Inject trackers
                         if os.path.exists(temp_local_path):
-                            if trackers:
-                                logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
-                                try:
-                                    t_file = TorrentFile(temp_local_path)
+                            try:
+                                t_file = TorrentFile(temp_local_path)
+                                if trackers:
+                                    logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
                                     t_file.add_trackers(trackers)
-                                    t_file.save(temp_local_path)
-                                except Exception as e:
-                                    logger.error(f"Failed to inject trackers for {torrent_hash}: {e}")
+                                    if not t_file.save(temp_local_path):
+                                        raise RuntimeError(f"Failed to save torrent after tracker injection: {torrent_hash}")
+                            except TorrentTrailingDataError as e:
+                                raise RuntimeError(
+                                    f"Downloaded seedbox torrent has trailing bencode data: {torrent_hash} "
+                                    f"({e.trailing_size} trailing bytes)"
+                                ) from e
+                            except Exception as e:
+                                raise RuntimeError(f"Downloaded seedbox torrent is not readable: {torrent_hash}: {e}") from e
 
                             # Rename to final name
                             os.replace(temp_local_path, final_local_path)

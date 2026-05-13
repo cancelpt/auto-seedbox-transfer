@@ -64,6 +64,24 @@ class MissingTorrentSFTPClient:
         return None
 
 
+class DownloadingSFTPClient:
+    download_calls = []
+    payload = b"downloaded"
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def connect(self):
+        return None
+
+    def download(self, remote_file, local_file):
+        type(self).download_calls.append((remote_file, local_file))
+        Path(local_file).write_bytes(type(self).payload)
+
+    def close(self):
+        return None
+
+
 def make_config(tmp_path, auto_dl_torrent_from_seedbox=False):
     return Config(
         transfer=Transfer(
@@ -398,6 +416,100 @@ def test_missing_remote_torrent_file_eventually_skips_placeholder_state(tmp_path
     assert final_state.download_retry_count == 3
     assert final_state.is_skipped is True
     assert "seedbox" in final_state.skip_reason.lower()
+
+
+def test_seedbox_download_replaces_corrupt_existing_local_torrent(tmp_path, monkeypatch):
+    config = make_config(tmp_path, auto_dl_torrent_from_seedbox=True)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    local_torrent_path = Path(config.transfer.original_torrent_path) / "origin-hash.torrent"
+    local_torrent_path.write_bytes(b"corrupt-local")
+    DownloadingSFTPClient.download_calls = []
+    DownloadingSFTPClient.payload = b"fresh-remote"
+
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=FakeSeedboxClient([make_completed_torrent()], add_response="Ok.")),
+    )
+    monkeypatch.setattr(seedbox_manager_module, "SFTPClient", DownloadingSFTPClient)
+
+    class FakeTorrentFile:
+        def __init__(self, file_path):
+            self.file_path = file_path
+            data = Path(file_path).read_bytes()
+            if data == b"corrupt-local":
+                raise seedbox_manager_module.TorrentTrailingDataError(
+                    file_path=str(file_path),
+                    total_size=len(data),
+                    valid_prefix_size=5,
+                    original_error=ValueError("invalid bencoded value (data after valid prefix)"),
+                )
+            self.trackers = []
+
+        def add_trackers(self, _trackers):
+            return None
+
+        def save(self, save_path):
+            Path(save_path).write_bytes(Path(save_path).read_bytes())
+            return True
+
+    monkeypatch.setattr(seedbox_manager_module, "TorrentFile", FakeTorrentFile)
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    assert DownloadingSFTPClient.download_calls == [
+        ("/remote/torrents/origin-hash.torrent", str(local_torrent_path) + ".tmp")
+    ]
+    assert local_torrent_path.read_bytes() == b"fresh-remote"
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+    assert final_state.origin_torrent_file_path == str(local_torrent_path)
+    assert final_state.download_retry_count == 0
+
+
+def test_seedbox_download_rejects_invalid_remote_torrent_before_replace(tmp_path, monkeypatch):
+    config = make_config(tmp_path, auto_dl_torrent_from_seedbox=True)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    local_torrent_path = Path(config.transfer.original_torrent_path) / "origin-hash.torrent"
+    DownloadingSFTPClient.download_calls = []
+    DownloadingSFTPClient.payload = b"invalid-remote"
+
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=FakeSeedboxClient([make_completed_torrent()], add_response="Ok.")),
+    )
+    monkeypatch.setattr(seedbox_manager_module, "SFTPClient", DownloadingSFTPClient)
+
+    class FakeTorrentFile:
+        def __init__(self, file_path):
+            raise ValueError(f"cannot parse {file_path}")
+
+    monkeypatch.setattr(seedbox_manager_module, "TorrentFile", FakeTorrentFile)
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    assert not local_torrent_path.exists()
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+    assert final_state.download_retry_count == 1
+    assert "cannot parse" in final_state.last_error
 
 
 def test_seedbox_bt_in_missing_files_state_is_treated_as_unusable(tmp_path, monkeypatch):
