@@ -69,6 +69,41 @@ def test_snapshot_uses_sync_updates_and_removed_hashes():
     assert snapshot.torrent("b") is None
 
 
+def test_snapshot_merges_partial_sync_updates():
+    class PartialSyncClient:
+        def __init__(self):
+            self.calls = 0
+
+        def sync_maindata(self, rid=0, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "rid": 1,
+                    "full_update": True,
+                    "torrents": {
+                        "a": {"name": "A", "category": "cat-a", "progress": 0.25},
+                    },
+                }
+
+            return {
+                "rid": 2,
+                "full_update": False,
+                "torrents": {
+                    "a": {"progress": 1.0},
+                },
+            }
+
+    snapshot = QbittorrentSnapshot(PartialSyncClient())
+
+    snapshot.refresh()
+    snapshot.refresh()
+
+    torrent = snapshot.torrent("a")
+    assert torrent.progress == 1.0
+    assert torrent.category == "cat-a"
+    assert torrent.name == "A"
+
+
 def test_snapshot_requests_trackers_during_full_list_refresh():
     client = FullListClient()
     snapshot = QbittorrentSnapshot(client)

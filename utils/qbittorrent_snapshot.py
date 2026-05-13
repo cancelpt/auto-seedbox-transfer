@@ -73,7 +73,15 @@ class QbittorrentSnapshot:
 
         torrents = response.get("torrents", {}) or {}
         for torrent_hash, torrent_data in torrents.items():
-            self._torrents_by_hash[torrent_hash] = self._normalize_torrent(torrent_hash, torrent_data)
+            updated_torrent = self._normalize_torrent(torrent_hash, torrent_data)
+            existing_torrent = self._torrents_by_hash.get(torrent_hash)
+            if existing_torrent is not None and not response.get("full_update"):
+                for key, value in vars(updated_torrent).items():
+                    setattr(existing_torrent, key, value)
+                if not getattr(existing_torrent, "hash", None):
+                    existing_torrent.hash = torrent_hash
+            else:
+                self._torrents_by_hash[torrent_hash] = updated_torrent
 
     def _refresh_from_full_list(self):
         try:
