@@ -14,6 +14,8 @@ class FakeSeedboxClient:
         self._torrents = list(torrents)
         self.add_response = add_response
         self.add_calls = []
+        self.delete_calls = []
+        self.recheck_calls = []
 
     def torrents_info(self, status=None, category=None, torrent_hashes=None):
         result = list(self._torrents)
@@ -30,10 +32,22 @@ class FakeSeedboxClient:
         return self.add_response
 
     def torrents_delete(self, **kwargs):
+        self.delete_calls.append(kwargs)
         return None
 
     def torrents_set_category(self, **kwargs):
         return None
+
+    def torrents_recheck(self, **kwargs):
+        self.recheck_calls.append(kwargs)
+        return None
+
+
+class AddCreatesMissingFilesSeedboxClient(FakeSeedboxClient):
+    def torrents_add(self, **kwargs):
+        self.add_calls.append(kwargs)
+        self._torrents.append(make_torrent_with_state("bt-hash", "BT", 0, "missingFiles"))
+        return self.add_response
 
 
 class MissingTorrentSFTPClient:
@@ -58,6 +72,7 @@ def make_config(tmp_path, auto_dl_torrent_from_seedbox=False):
             torrent_info_path=str(tmp_path / "state.json"),
             bt_trackers=[],
             auto_dl_torrent_from_seedbox=auto_dl_torrent_from_seedbox,
+            seedbox_origin_data_missing_policy="pause_transfer",
         ),
         seed_box=[
             SeedBox(
@@ -87,6 +102,22 @@ def make_config(tmp_path, auto_dl_torrent_from_seedbox=False):
     )
 
 
+def make_config_with_missing_policy(tmp_path, policy):
+    config = make_config(tmp_path)
+    return Config(
+        transfer=Transfer(
+            original_torrent_path=config.transfer.original_torrent_path,
+            bt_path=config.transfer.bt_path,
+            torrent_info_path=config.transfer.torrent_info_path,
+            bt_trackers=config.transfer.bt_trackers,
+            auto_dl_torrent_from_seedbox=config.transfer.auto_dl_torrent_from_seedbox,
+            seedbox_origin_data_missing_policy=policy,
+        ),
+        seed_box=config.seed_box,
+        downloaders=config.downloaders,
+    )
+
+
 def make_completed_torrent():
     return SimpleNamespace(
         hash="origin-hash",
@@ -109,6 +140,12 @@ def make_torrent(hash_value, category, progress):
         save_path="/downloads/origin",
         trackers=[],
     )
+
+
+def make_torrent_with_state(hash_value, category, progress, state):
+    torrent = make_torrent(hash_value, category, progress)
+    torrent.state = state
+    return torrent
 
 
 def test_seedbox_add_failures_persist_across_runs_and_eventually_skip(tmp_path, monkeypatch):
@@ -361,3 +398,276 @@ def test_missing_remote_torrent_file_eventually_skips_placeholder_state(tmp_path
     assert final_state.download_retry_count == 3
     assert final_state.is_skipped is True
     assert "seedbox" in final_state.skip_reason.lower()
+
+
+def test_seedbox_bt_in_missing_files_state_is_treated_as_unusable(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+            is_bt_in_seed_box=True,
+            seedbox_bt_health="missing_files",
+        )
+    )
+
+    seedbox_torrents = [
+        make_torrent("origin-hash", "To", 1),
+        make_torrent_with_state("bt-hash", "BT", 0.2, "missingFiles"),
+    ]
+    client = FakeSeedboxClient(seedbox_torrents, add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert final_state.is_bt_in_seed_box is False
+    assert final_state.is_skipped is False
+    assert client.add_calls == []
+
+
+def test_seedbox_does_not_add_bt_when_origin_is_missing_files(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+            seedbox_bt_health="missing_files",
+        )
+    )
+
+    seedbox_torrents = [make_torrent_with_state("origin-hash", "To", 0.6, "missingFiles")]
+    client = FakeSeedboxClient(seedbox_torrents, add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert final_state.is_bt_in_seed_box is False
+    assert client.add_calls == []
+
+
+def test_seedbox_add_success_is_verified_before_marking_bt_available(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+        )
+    )
+
+    client = AddCreatesMissingFilesSeedboxClient([make_completed_torrent()], add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    home_trigger = threading.Event()
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        trigger_home=home_trigger,
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert client.add_calls
+    assert final_state.is_bt_in_seed_box is False
+    assert final_state.seedbox_bt_health == "missing_files"
+    assert home_trigger.is_set() is False
+
+
+def test_seedbox_add_success_without_visible_bt_waits_without_recheck(tmp_path, monkeypatch):
+    config = make_config_with_missing_policy(tmp_path, "force_recheck_and_rebuild_bt")
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+        )
+    )
+
+    client = FakeSeedboxClient([make_completed_torrent()], add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    home_trigger = threading.Event()
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        trigger_home=home_trigger,
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert client.add_calls
+    assert final_state.is_bt_in_seed_box is False
+    assert final_state.seedbox_bt_health == "missing_torrent"
+    assert final_state.is_skipped is False
+    assert client.delete_calls == []
+    assert client.recheck_calls == []
+    assert home_trigger.is_set() is False
+
+
+def test_force_recheck_policy_deletes_bad_seedbox_bt_without_files_and_rechecks_origin(tmp_path, monkeypatch):
+    config = make_config_with_missing_policy(tmp_path, "force_recheck_and_rebuild_bt")
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+            is_bt_in_seed_box=True,
+        )
+    )
+
+    seedbox_torrents = [
+        make_torrent("origin-hash", "To", 1),
+        make_torrent_with_state("bt-hash", "BT", 0.2, "missingFiles"),
+    ]
+    client = FakeSeedboxClient(seedbox_torrents, add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert final_state.is_bt_in_seed_box is False
+    assert final_state.seedbox_origin_data_status == "recheck_requested"
+    assert client.delete_calls == [{"torrent_hashes": "bt-hash", "delete_files": False}]
+    assert client.recheck_calls == [{"torrent_hashes": "origin-hash"}]
+
+
+def test_skip_policy_marks_missing_seedbox_source_skipped_without_deleting(tmp_path, monkeypatch):
+    config = make_config_with_missing_policy(tmp_path, "skip_transfer")
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+            is_bt_in_seed_box=True,
+        )
+    )
+
+    seedbox_torrents = [
+        make_torrent("origin-hash", "To", 1),
+        make_torrent_with_state("bt-hash", "BT", 0.2, "missingFiles"),
+    ]
+    client = FakeSeedboxClient(seedbox_torrents, add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert final_state.is_skipped is True
+    assert "missingFiles" in final_state.skip_reason
+    assert client.delete_calls == []
+    assert client.recheck_calls == []

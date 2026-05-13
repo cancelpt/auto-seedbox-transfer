@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import List, Optional, Union
 
 import yaml
 from pydantic import BaseModel
+
+
+class SeedboxOriginDataMissingPolicy(str, Enum):
+    pause_transfer = "pause_transfer"
+    skip_transfer = "skip_transfer"
+    force_recheck_and_rebuild_bt = "force_recheck_and_rebuild_bt"
 
 
 class Transfer(BaseModel):
@@ -11,6 +18,7 @@ class Transfer(BaseModel):
     bt_path: str
     torrent_info_path: str
     bt_trackers: List[str]
+    seedbox_origin_data_missing_policy: SeedboxOriginDataMissingPolicy
     max_once_add: int = 5
     seed_box_bt_category: str = "keep"
     seed_box_ignore_complete_time: int = 0

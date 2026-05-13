@@ -25,6 +25,7 @@ def make_config(tmp_path):
             bt_path=str(tmp_path / "bt"),
             torrent_info_path=str(tmp_path / "state.json"),
             bt_trackers=[],
+            seedbox_origin_data_missing_policy="pause_transfer",
         ),
         seed_box=[
             SeedBox(

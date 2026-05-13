@@ -6,8 +6,16 @@ import os
 from qbittorrentapi import Client
 
 from managers.state_manager import StateManager
-from transfer.torrent_transfer import DEFAULT_RETRY_LIMIT
-from utils.config import Config, SeedBox
+from transfer.torrent_transfer import (
+    DEFAULT_RETRY_LIMIT,
+    ORIGIN_DATA_STATUS_BLOCKED,
+    ORIGIN_DATA_STATUS_MISSING_FILES,
+    ORIGIN_DATA_STATUS_RECHECK_REQUESTED,
+    ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD,
+    SEEDBOX_BT_HEALTH_MISSING_FILES,
+    SEEDBOX_BT_HEALTH_MISSING_TORRENT,
+)
+from utils.config import Config, SeedBox, SeedboxOriginDataMissingPolicy
 from utils.downloader_utils import DownloaderHelper, get_downloader_client
 from utils.qbittorrent_snapshot import QbittorrentSnapshot
 
@@ -61,6 +69,44 @@ class HomeManager:
         else:
             logger.warning(f"{error_message}. Attempt {attempts}/{DEFAULT_RETRY_LIMIT}")
         self.state_manager.update(state)
+
+    @staticmethod
+    def _seedbox_source_unavailable(state) -> bool:
+        return (
+            state.seedbox_bt_health in {SEEDBOX_BT_HEALTH_MISSING_FILES, SEEDBOX_BT_HEALTH_MISSING_TORRENT}
+            or state.seedbox_origin_data_status
+            in {
+                ORIGIN_DATA_STATUS_MISSING_FILES,
+                ORIGIN_DATA_STATUS_BLOCKED,
+                ORIGIN_DATA_STATUS_RECHECK_REQUESTED,
+                ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD,
+            }
+        )
+
+    def _handle_unavailable_seedbox_source_for_home_bt(self, home_dl: Client, state) -> bool:
+        policy = self.config.transfer.seedbox_origin_data_missing_policy
+
+        if policy == SeedboxOriginDataMissingPolicy.skip_transfer:
+            state.is_skipped = True
+            state.skip_reason = "Seedbox source unavailable while home BT is incomplete"
+            state.last_error = state.skip_reason
+            self.state_manager.update(state)
+            logger.warning(f"{state.skip_reason}: {state.hash}")
+            return True
+
+        if policy == SeedboxOriginDataMissingPolicy.force_recheck_and_rebuild_bt:
+            if state.is_bt_in_home_dl:
+                logger.warning(f"Deleting incomplete home BT without files before rebuild: {state.bt_hash}")
+                home_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
+            state.is_bt_in_home_dl = False
+            state.last_error = "Seedbox source unavailable; home BT removed and waiting for rebuild"
+            self.state_manager.update(state)
+            return True
+
+        state.last_error = "Seedbox source unavailable; home BT is blocked by policy"
+        self.state_manager.update(state)
+        logger.warning(f"Seedbox source unavailable, keeping home BT blocked: {state.hash}")
+        return True
 
     def run(self):
         """Run home management tasks."""
@@ -134,6 +180,10 @@ class HomeManager:
                     and not state.is_torrent_in_home_dl
                 ):
                     is_completed = self._check_bt_completed(home_dl, state.bt_hash, self.home_snapshot)
+                    if not is_completed and self._seedbox_source_unavailable(state):
+                        self._handle_unavailable_seedbox_source_for_home_bt(home_dl, state)
+                        continue
+
                     if is_completed:
                         if not os.path.exists(state.origin_torrent_file_path):
                             self._record_home_failure(

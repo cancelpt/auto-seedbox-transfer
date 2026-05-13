@@ -10,8 +10,19 @@ from pathlib import Path
 from qbittorrentapi import Client, TorrentInfoList
 
 from managers.state_manager import StateManager
-from transfer.torrent_transfer import DEFAULT_RETRY_LIMIT, TorrentTransfer
-from utils.config import Config
+from transfer.torrent_transfer import (
+    DEFAULT_RETRY_LIMIT,
+    ORIGIN_DATA_STATUS_BLOCKED,
+    ORIGIN_DATA_STATUS_MISSING_FILES,
+    ORIGIN_DATA_STATUS_OK,
+    ORIGIN_DATA_STATUS_RECHECK_REQUESTED,
+    ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD,
+    SEEDBOX_BT_HEALTH_MISSING_FILES,
+    SEEDBOX_BT_HEALTH_MISSING_TORRENT,
+    SEEDBOX_BT_HEALTH_READY,
+    TorrentTransfer,
+)
+from utils.config import Config, SeedboxOriginDataMissingPolicy
 from utils.downloader_utils import DownloaderHelper, get_downloader_client
 from utils.qbittorrent_snapshot import QbittorrentSnapshot
 from utils.sftp_utils import SFTPClient
@@ -104,22 +115,118 @@ class SeedBoxManager:
             logger.warning(f"{error_message}. Attempt {attempts}/{DEFAULT_RETRY_LIMIT}")
         self.state_manager.update(state)
 
-    def _sync_existing_transfer_state(self, seed_box_torrent_hashes: set[str]):
+    @staticmethod
+    def _is_missing_files(torrent) -> bool:
+        return getattr(torrent, "state", "") == "missingFiles"
+
+    def _apply_origin_data_missing_policy(
+        self,
+        state: TorrentTransfer,
+        seed_box_dl: Client,
+        origin_torrent=None,
+        bt_torrent=None,
+        reason: str = "",
+    ) -> bool:
+        policy = self.config.transfer.seedbox_origin_data_missing_policy
+        updated = False
+
+        if state.seedbox_origin_data_status not in {
+            ORIGIN_DATA_STATUS_RECHECK_REQUESTED,
+            ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD,
+        }:
+            state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_MISSING_FILES
+        state.last_error = reason or "Seedbox origin data is missing"
+        updated = True
+
+        if policy == SeedboxOriginDataMissingPolicy.skip_transfer:
+            state.is_skipped = True
+            state.skip_reason = reason or "Seedbox origin data is missing"
+            logger.warning(f"Skipping transfer because seedbox origin data is missing: {state.hash}")
+            return updated
+
+        if policy == SeedboxOriginDataMissingPolicy.force_recheck_and_rebuild_bt:
+            if bt_torrent is not None and state.bt_hash and state.seedbox_origin_data_recheck_count == 0:
+                logger.warning(f"Deleting unusable BT torrent from seedbox without files: {state.bt_hash}")
+                seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
+                state.is_bt_in_seed_box = False
+                state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_FILES
+                updated = True
+
+            if origin_torrent is not None and state.seedbox_origin_data_recheck_count == 0:
+                logger.warning(f"Requesting seedbox origin torrent recheck: {state.hash}")
+                seed_box_dl.torrents_recheck(torrent_hashes=state.hash)
+                state.seedbox_origin_data_recheck_count += 1
+                state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_RECHECK_REQUESTED
+                updated = True
+            return updated
+
+        state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_BLOCKED
+        logger.warning(f"Seedbox origin data missing, transfer blocked by policy: {state.hash}")
+        return updated
+
+    def _mark_origin_data_healthy(self, state: TorrentTransfer) -> bool:
+        updated = False
+        if state.seedbox_origin_data_status != ORIGIN_DATA_STATUS_OK:
+            state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_OK
+            updated = True
+        if state.seedbox_origin_data_recheck_count:
+            state.seedbox_origin_data_recheck_count = 0
+            updated = True
+        return updated
+
+    def _sync_existing_transfer_state(self, seed_box_torrent_hashes: set[str], seed_box_dl: Client):
         for info_hash, state in self.state_manager.get_all().items():
             if state.is_skipped or state.is_torrent_in_home_dl:
                 continue
 
             updated = False
-            if state.bt_hash and state.is_bt_in_seed_box and state.bt_hash not in seed_box_torrent_hashes:
+            origin_torrent = self.seed_box_snapshot.torrent(state.hash)
+            bt_torrent = self.seed_box_snapshot.torrent(state.bt_hash) if state.bt_hash else None
+            source_missing_detected = False
+
+            if state.bt_hash and state.bt_hash in seed_box_torrent_hashes and bt_torrent is not None:
+                if self._is_missing_files(bt_torrent):
+                    logger.warning(f"BT torrent has missing files on seedbox, resetting state: {state.bt_hash}")
+                    state.is_bt_in_seed_box = False
+                    state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_FILES
+                    source_missing_detected = True
+                    updated = True
+                    updated |= self._apply_origin_data_missing_policy(
+                        state,
+                        seed_box_dl,
+                        origin_torrent=origin_torrent,
+                        bt_torrent=bt_torrent,
+                        reason="Seedbox BT torrent reports missingFiles",
+                    )
+                elif state.is_bt_in_seed_box:
+                    if state.seedbox_bt_health != SEEDBOX_BT_HEALTH_READY:
+                        state.seedbox_bt_health = SEEDBOX_BT_HEALTH_READY
+                        updated = True
+            elif state.bt_hash and state.is_bt_in_seed_box and state.bt_hash not in seed_box_torrent_hashes:
                 logger.warning(f"BT torrent missing from seedbox, resetting state: {state.bt_hash}")
                 state.is_bt_in_seed_box = False
+                state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_TORRENT
                 updated = True
+
+            if origin_torrent is not None and self._is_missing_files(origin_torrent):
+                source_missing_detected = True
+                updated |= self._apply_origin_data_missing_policy(
+                    state,
+                    seed_box_dl,
+                    origin_torrent=origin_torrent,
+                    bt_torrent=bt_torrent,
+                    reason="Seedbox origin torrent reports missingFiles",
+                )
+                self.state_manager.update(state)
+                continue
 
             origin_available = state.hash in seed_box_torrent_hashes or os.path.exists(state.origin_torrent_file_path)
             if origin_available:
                 if state.missing_origin_retry_count:
                     state.missing_origin_retry_count = 0
                     updated = True
+                if origin_torrent is not None and not source_missing_detected:
+                    updated |= self._mark_origin_data_healthy(state)
             else:
                 attempts = state.record_failure(
                     "missing_origin_retry_count",
@@ -146,7 +253,7 @@ class SeedBoxManager:
         self.seed_box_snapshot.refresh()
         all_torrents: TorrentInfoList = self.seed_box_snapshot.torrents()
         seed_box_torrent_hashes = self.seed_box_snapshot.hashes()
-        self._sync_existing_transfer_state(seed_box_torrent_hashes)
+        self._sync_existing_transfer_state(seed_box_torrent_hashes, seed_box_dl)
 
         torrents = [torrent for torrent in all_torrents if getattr(torrent, "progress", 0) == 1]
 
@@ -305,13 +412,39 @@ class SeedBoxManager:
 
                 # Logic: Add BT torrent to seedbox if not present
                 if state.bt_hash in seed_box_torrent_hashes:
-                    if not state.is_bt_in_seed_box:
+                    existing_bt_torrent = self.seed_box_snapshot.torrent(state.bt_hash)
+                    if existing_bt_torrent is not None and self._is_missing_files(existing_bt_torrent):
+                        state.is_bt_in_seed_box = False
+                        state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_FILES
+                        self._apply_origin_data_missing_policy(
+                            state,
+                            seed_box_dl,
+                            origin_torrent=torrent,
+                            bt_torrent=existing_bt_torrent,
+                            reason="Seedbox BT torrent reports missingFiles",
+                        )
+                        self.state_manager.update(state)
+                    elif not state.is_bt_in_seed_box:
                         logger.info(f"BT torrent found on seedbox, updating state: {state.bt_hash}")
                         state.is_bt_in_seed_box = True
+                        state.seedbox_bt_health = SEEDBOX_BT_HEALTH_READY
                         state.reset_failures("seedbox_add_retry_count")
                         if state.hash in seed_box_torrent_hashes or os.path.exists(state.origin_torrent_file_path):
                             state.reset_failures("missing_origin_retry_count")
+                            self._mark_origin_data_healthy(state)
                         self.state_manager.update(state)
+                    continue
+
+                if self._is_missing_files(torrent):
+                    state.is_bt_in_seed_box = False
+                    state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_TORRENT
+                    self._apply_origin_data_missing_policy(
+                        state,
+                        seed_box_dl,
+                        origin_torrent=torrent,
+                        reason="Seedbox origin torrent reports missingFiles",
+                    )
+                    self.state_manager.update(state)
                     continue
 
                 if not os.path.exists(state.bt_torrent_file_path):
@@ -332,11 +465,36 @@ class SeedBoxManager:
                     save_path=torrent.save_path,
                 )
                 if "Ok." in str(result):
+                    self.seed_box_snapshot.refresh()
+                    added_bt_torrent = self.seed_box_snapshot.torrent(state.bt_hash)
+                    if added_bt_torrent is None:
+                        logger.warning(f"BT torrent add returned success but is not visible yet: {state.bt_hash}")
+                        state.is_bt_in_seed_box = False
+                        state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_TORRENT
+                        self.state_manager.update(state)
+                        continue
+
+                    if self._is_missing_files(added_bt_torrent):
+                        logger.warning(f"BT torrent add returned success but reports missingFiles: {state.bt_hash}")
+                        state.is_bt_in_seed_box = False
+                        state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_FILES
+                        self._apply_origin_data_missing_policy(
+                            state,
+                            seed_box_dl,
+                            origin_torrent=torrent,
+                            bt_torrent=added_bt_torrent,
+                            reason="Seedbox BT torrent is unusable after add",
+                        )
+                        self.state_manager.update(state)
+                        continue
+
                     logger.info(f"Successfully added BT torrent: {state.bt_hash}")
                     state.is_bt_in_seed_box = True
+                    state.seedbox_bt_health = SEEDBOX_BT_HEALTH_READY
                     state.reset_failures("seedbox_add_retry_count")
                     if state.hash in seed_box_torrent_hashes or os.path.exists(state.origin_torrent_file_path):
                         state.reset_failures("missing_origin_retry_count")
+                        self._mark_origin_data_healthy(state)
                     self.state_manager.update(state)
                     add_torrent_count += 1
 

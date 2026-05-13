@@ -45,6 +45,8 @@ pip install -r requirements.txt
   
    `seed_box_keep_torrent`: 默认为 `False`（转移后删除盒子上的原始种子）。如果设为 `True`，则不会删除，而是将其移动到 `seed_box_keep_torrent_category` 指定的分类，允许分类为`""`即空值，这样原始种子的分类会被删除。通常来说可以配合 Vertex 来自动删种这些已经转移的原始种子，并且延迟删种多混一些上传，直到 Vertex 的删种规则触发。
 
+   `seedbox_origin_data_missing_policy`: 必填。用于控制盒子 qBittorrent 任务仍存在、但 qB 状态为`missingFiles`或资源文件不可用时的行为。`pause_transfer`会阻断该任务并等待人工处理，不删除、不重校验、不重建；`skip_transfer`会标记跳过，不删除远端任务或文件；`force_recheck_and_rebuild_bt`会删除错误的 BT 任务但不删除文件，对原始种子执行重新校验，等待原始种恢复后再重新投递 BT。该配置必须显式填写，避免升级后在无人确认的情况下执行破坏性动作。
+
    BT 的 tracker 列表通常不是必须的，因为当你配置了`ssh host`和`incoming_port`时，脚本会**自动添加盒子的 peer 信息到本地下载器的每个 BT 种子**。
 
    `pause_after_add_origin`: 默认为 `False`（添加原始种子后直接开始本地下载器做种）。如果设为 `True`，则添加原始种子后暂停，等待用户手动做种。
@@ -59,7 +61,7 @@ pip install -r requirements.txt
 
    脚本会复用 qBittorrent 登录会话，并优先通过 qBittorrent 的`sync/maindata`增量快照维护下载器状态；如果客户端或接口不支持增量同步，会自动回退到`torrents_info()`全量列表，保证兼容性。
 
-   脚本会把回传任务状态和相关失败次数持久化到`torrent_info_path`。对于盒子删种、远端`.torrent`文件丢失、添加 BT/原始种失败等异常情况，同一条已进入回传状态的任务连续失败 3 次后会被自动标记为跳过，避免无限重试；如需重新尝试，删除对应状态文件记录后再运行即可。开启`exit_on_finish`时，已标记跳过的任务不会阻止程序退出。
+   脚本会把回传任务状态、盒子源可用性和相关失败次数持久化到`torrent_info_path`。对于盒子删种、远端`.torrent`文件丢失、添加 BT/原始种失败等异常情况，同一条已进入回传状态的任务连续失败 3 次后会被自动标记为跳过，避免无限重试；对于 qB 任务存在但资源文件缺失的情况，会按`seedbox_origin_data_missing_policy`处理，`is_bt_in_seed_box`只表示盒子 BT 源当前可用，不再仅表示 qB 任务存在。如需重新尝试，删除对应状态文件记录后再运行即可。开启`exit_on_finish`时，已标记跳过的任务不会阻止程序退出。
 
    注意，对于盒子下载器`seed_box`配置项内的`name`与`downloaders`配置项内的 **`name`必须一致时**，脚本才能正常工作。
    
