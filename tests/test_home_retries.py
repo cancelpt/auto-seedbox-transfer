@@ -459,6 +459,65 @@ def test_home_ensures_final_origin_category_before_marking_synced(tmp_path, monk
     assert final_state.is_torrent_in_home_dl is True
 
 
+def test_home_rechecks_incomplete_origin_after_bt_is_complete(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+            is_bt_in_seed_box=True,
+            is_bt_in_home_dl=True,
+        )
+    )
+
+    client = FakeHomeClient()
+
+    def torrents_info(torrent_hashes=None):
+        origin = SimpleNamespace(hash="origin-hash", progress=0, state="pausedDL")
+        bt = SimpleNamespace(hash="bt-hash", progress=1, state="stalledUP")
+        if torrent_hashes is None:
+            return [origin, bt]
+        if torrent_hashes == "origin-hash":
+            return [origin]
+        if torrent_hashes == "bt-hash":
+            return [bt]
+        return []
+
+    client.torrents_info = torrents_info
+    monkeypatch.setattr(
+        home_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = HomeManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        "/downloads/home",
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert client.recheck_calls == [
+        {"torrent_hashes": "bt-hash"},
+        {"torrent_hashes": "origin-hash"},
+    ]
+    assert client.delete_calls == []
+    assert final_state.is_torrent_in_home_dl is False
+    assert final_state.home_origin_recheck_count == 1
+
+
 def test_home_blocks_bt_when_seedbox_origin_is_missing_files(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)

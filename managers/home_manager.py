@@ -138,6 +138,20 @@ class HomeManager:
             return self.target_download_dir
         return getattr(bt_torrent, "save_path", None) if bt_torrent is not None else None
 
+    def _request_origin_recheck_if_needed(self, home_dl: Client, state, origin_torrent, bt_torrent):
+        if getattr(bt_torrent, "progress", 0) != 1:
+            return False
+        if state.home_origin_recheck_count:
+            return False
+
+        logger.info(f"Rechecking incomplete home Origin after BT completed: {state.hash}")
+        home_dl.torrents_recheck(torrent_hashes=state.bt_hash)
+        home_dl.torrents_recheck(torrent_hashes=state.hash)
+        self._start_home_bt_if_needed(home_dl, origin_torrent)
+        state.home_origin_recheck_count += 1
+        self.state_manager.update(state)
+        return True
+
     def run(self):
         """Run home management tasks."""
         try:
@@ -254,6 +268,12 @@ class HomeManager:
                 # BT is also at home -> verify Origin completed, then delete BT
                 if state.hash in home_dl_hashes and state.bt_hash in home_dl_hashes:
                     if not self._is_torrent_completed(home_dl, state.hash, self.home_snapshot):
+                        self._request_origin_recheck_if_needed(
+                            home_dl,
+                            state,
+                            self.home_snapshot.torrent(state.hash),
+                            self.home_snapshot.torrent(state.bt_hash),
+                        )
                         # Origin not yet completed, wait
                         continue
                     logger.info(f"Origin completed and BT both found at home. Deleting BT: {state.bt_hash}")
@@ -266,6 +286,7 @@ class HomeManager:
                         torrent_hashes=state.hash,
                     )
                     state.is_torrent_in_home_dl = True
+                    state.home_origin_recheck_count = 0
                     state.reset_failures("home_add_retry_count")
                     self.state_manager.update(state)
 
@@ -284,6 +305,7 @@ class HomeManager:
                     # Note: Origin is a PT torrent, do not add peers or modify category
                     if self._is_torrent_completed(home_dl, state.hash, self.home_snapshot):
                         state.is_torrent_in_home_dl = True
+                        state.home_origin_recheck_count = 0
                         state.reset_failures("home_add_retry_count")
                         self.state_manager.update(state)
 
