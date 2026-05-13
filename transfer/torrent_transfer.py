@@ -28,6 +28,7 @@ class TorrentTransfer(BaseModel):
     download_retry_count: int = 0
     seedbox_add_retry_count: int = 0
     home_add_retry_count: int = 0
+    home_origin_recheck_count: int = 0
     missing_origin_retry_count: int = 0
     is_skipped: bool = False
     skip_reason: str = ""
