@@ -579,6 +579,51 @@ def test_seedbox_add_success_without_visible_bt_waits_without_recheck(tmp_path, 
     assert home_trigger.is_set() is False
 
 
+def test_seedbox_waits_after_recheck_before_readding_bt(tmp_path, monkeypatch):
+    config = make_config_with_missing_policy(tmp_path, "force_recheck_and_rebuild_bt")
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    Path(tmp_path / "bt.torrent").write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(tmp_path / "bt.torrent"),
+            is_bt_in_seed_box=False,
+            seedbox_bt_health="missing_files",
+            seedbox_origin_data_status="recheck_requested",
+            seedbox_origin_data_recheck_count=1,
+        )
+    )
+
+    client = FakeSeedboxClient([make_completed_torrent()], add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert final_state.is_bt_in_seed_box is False
+    assert final_state.seedbox_origin_data_status == "recheck_requested"
+    assert client.add_calls == []
+
+
 def test_force_recheck_policy_deletes_bad_seedbox_bt_without_files_and_rechecks_origin(tmp_path, monkeypatch):
     config = make_config_with_missing_policy(tmp_path, "force_recheck_and_rebuild_bt")
     Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
