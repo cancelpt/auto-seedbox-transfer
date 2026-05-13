@@ -133,6 +133,11 @@ class HomeManager:
         except Exception as e:
             logger.debug(f"Home category may already exist or cannot be created: {category}: {e}")
 
+    def _save_path_for_origin(self, bt_torrent):
+        if self.target_download_dir:
+            return self.target_download_dir
+        return getattr(bt_torrent, "save_path", None) if bt_torrent is not None else None
+
     def run(self):
         """Run home management tasks."""
         try:
@@ -225,7 +230,7 @@ class HomeManager:
                         logger.info(f"BT torrent completed at home. Adding Origin torrent: {state.hash}")
                         result = home_dl.torrents_add(
                             torrent_files=state.origin_torrent_file_path,
-                            save_path=self.target_download_dir,
+                            save_path=self._save_path_for_origin(bt_torrent),
                             category=self.config.transfer.home_origin_temp_category,
                             is_skip_checking=True,
                             is_paused=self.config.transfer.pause_after_add_origin,
