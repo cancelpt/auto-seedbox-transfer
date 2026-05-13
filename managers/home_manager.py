@@ -108,6 +108,21 @@ class HomeManager:
         logger.warning(f"Seedbox source unavailable, keeping home BT blocked: {state.hash}")
         return True
 
+    def _start_home_bt_if_needed(self, home_dl: Client, bt_torrent):
+        state = getattr(bt_torrent, "state", "")
+        if state not in {"pausedDL", "stoppedDL"}:
+            return
+
+        torrent_hash = getattr(bt_torrent, "hash", "")
+        if not torrent_hash:
+            return
+
+        logger.info(f"Starting paused home BT torrent: {torrent_hash}")
+        if hasattr(home_dl, "torrents_start"):
+            home_dl.torrents_start(torrent_hashes=torrent_hash)
+        else:
+            home_dl.torrents_resume(torrent_hashes=torrent_hash)
+
     def run(self):
         """Run home management tasks."""
         try:
@@ -159,6 +174,7 @@ class HomeManager:
                         torrent_files=state.bt_torrent_file_path,
                         save_path=self.target_download_dir,
                         category=self.config.transfer.home_bt_category,
+                        is_paused=False,
                     )
                     if "Ok." in str(result):
                         state.is_bt_in_home_dl = True
@@ -179,6 +195,10 @@ class HomeManager:
                     and state.hash not in home_dl_hashes
                     and not state.is_torrent_in_home_dl
                 ):
+                    bt_torrent = self.home_snapshot.torrent(state.bt_hash)
+                    if bt_torrent is not None:
+                        self._start_home_bt_if_needed(home_dl, bt_torrent)
+
                     is_completed = self._check_bt_completed(home_dl, state.bt_hash, self.home_snapshot)
                     if not is_completed and self._seedbox_source_unavailable(state):
                         self._handle_unavailable_seedbox_source_for_home_bt(home_dl, state)
@@ -254,6 +274,17 @@ class HomeManager:
                         # Trigger SeedBoxManager so it can delete the seedbox copy immediately
                         if self.trigger_seedbox:
                             self.trigger_seedbox.set()
+                    continue
+
+                if (
+                    state.is_bt_in_home_dl
+                    and state.bt_hash not in home_dl_hashes
+                    and not state.is_torrent_in_home_dl
+                ):
+                    logger.warning(f"Home BT torrent missing, resetting state so it can be re-added: {state.bt_hash}")
+                    state.is_bt_in_home_dl = False
+                    self.state_manager.update(state)
+                    continue
             except Exception as e:
                 if not state.is_torrent_in_home_dl:
                     self._record_home_failure(

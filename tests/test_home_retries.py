@@ -14,6 +14,7 @@ class FakeHomeClient:
         self.add_calls = []
         self.delete_calls = []
         self.recheck_calls = []
+        self.start_calls = []
 
     def torrents_info(self, torrent_hashes=None):
         if torrent_hashes is None:
@@ -38,6 +39,10 @@ class FakeHomeClient:
 
     def torrents_recheck(self, **kwargs):
         self.recheck_calls.append(kwargs)
+        return None
+
+    def torrents_start(self, **kwargs):
+        self.start_calls.append(kwargs)
         return None
 
 
@@ -181,6 +186,142 @@ def test_home_does_not_readd_bt_when_state_already_marked_in_home(tmp_path, monk
     manager.run()
 
     assert len(lagging_client.add_calls) == 0
+
+
+def test_home_resets_stale_bt_state_when_home_task_disappeared(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    bt_path = Path(tmp_path / "bt.torrent")
+    bt_path.write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(bt_path),
+            is_bt_in_seed_box=True,
+            is_bt_in_home_dl=True,
+        )
+    )
+
+    client = LaggingHomeClient([set()])
+    monkeypatch.setattr(
+        home_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = HomeManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        "/downloads/home",
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert final_state.is_bt_in_home_dl is False
+    assert len(client.add_calls) == 0
+
+
+def test_home_adds_bt_as_started(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    bt_path = Path(tmp_path / "bt.torrent")
+    bt_path.write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(bt_path),
+            is_bt_in_seed_box=True,
+        )
+    )
+
+    client = LaggingHomeClient([set()])
+    client.torrents_add = lambda **kwargs: client.add_calls.append(kwargs) or "Ok."
+    monkeypatch.setattr(
+        home_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = HomeManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        "/downloads/home",
+    )
+    manager.run()
+
+    assert client.add_calls == [
+        {
+            "torrent_files": str(bt_path),
+            "save_path": "/downloads/home",
+            "category": config.transfer.home_bt_category,
+            "is_paused": False,
+        }
+    ]
+
+
+def test_home_starts_paused_existing_bt(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    Path(tmp_path / "origin.torrent").write_text("origin", encoding="utf-8")
+    bt_path = Path(tmp_path / "bt.torrent")
+    bt_path.write_text("bt", encoding="utf-8")
+
+    initial_state = StateManager(config.transfer.torrent_info_path)
+    initial_state.update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(tmp_path / "origin.torrent"),
+            bt_torrent_file_path=str(bt_path),
+            is_bt_in_seed_box=True,
+            is_bt_in_home_dl=True,
+        )
+    )
+
+    client = FakeHomeClient()
+
+    def torrents_info(torrent_hashes=None):
+        if torrent_hashes is None:
+            return [SimpleNamespace(hash="bt-hash", progress=0, state="pausedDL")]
+        if torrent_hashes == "bt-hash":
+            return [SimpleNamespace(hash="bt-hash", progress=0, state="pausedDL")]
+        return []
+
+    client.torrents_info = torrents_info
+    monkeypatch.setattr(
+        home_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = HomeManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        "/downloads/home",
+    )
+    manager.run()
+
+    assert client.start_calls == [{"torrent_hashes": "bt-hash"}]
 
 
 def test_home_blocks_bt_when_seedbox_origin_is_missing_files(tmp_path, monkeypatch):
