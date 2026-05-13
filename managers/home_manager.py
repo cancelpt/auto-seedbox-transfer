@@ -123,6 +123,16 @@ class HomeManager:
         else:
             home_dl.torrents_resume(torrent_hashes=torrent_hash)
 
+    def _ensure_home_category(self, home_dl: Client, category: str):
+        if not category:
+            return
+        if not hasattr(home_dl, "torrents_create_category"):
+            return
+        try:
+            home_dl.torrents_create_category(name=category, save_path=self.target_download_dir)
+        except Exception as e:
+            logger.debug(f"Home category may already exist or cannot be created: {category}: {e}")
+
     def run(self):
         """Run home management tasks."""
         try:
@@ -245,6 +255,7 @@ class HomeManager:
                     home_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
 
                     # Set category to final and mark as synced
+                    self._ensure_home_category(home_dl, self.config.transfer.home_origin_category)
                     home_dl.torrents_set_category(
                         category=self.config.transfer.home_origin_category,
                         torrent_hashes=state.hash,
