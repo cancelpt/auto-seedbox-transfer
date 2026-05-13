@@ -7,7 +7,7 @@ import shutil
 from managers.state_manager import StateManager
 from transfer.torrent_transfer import TorrentTransfer
 from utils.config import Config
-from utils.torrent_utils import TorrentFile, export_as_torrent
+from utils.torrent_utils import TorrentFile, TorrentTrailingDataError, export_as_torrent
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,16 @@ class LocalManager:
                         if torrent_file_path in self.failed_counts:
                             del self.failed_counts[torrent_file_path]
 
+                    except TorrentTrailingDataError as e:
+                        self.failed_counts[torrent_file_path] = self.failed_counts.get(torrent_file_path, 0) + 1
+                        logger.error(
+                            "Failed to process torrent %s: local file has %s bytes of trailing data after a valid "
+                            "bencode prefix. Re-download this origin torrent from seedbox.",
+                            torrent_file_path,
+                            e.trailing_size,
+                        )
+                        if self.failed_counts[torrent_file_path] >= 3:
+                            logger.warning(f"Skipping torrent {torrent_file_path} after 3 failed attempts.")
                     except Exception as e:
                         self.failed_counts[torrent_file_path] = self.failed_counts.get(torrent_file_path, 0) + 1
                         logger.error(f"Failed to process torrent {torrent_file_path}: {e}")

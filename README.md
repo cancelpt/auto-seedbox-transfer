@@ -57,6 +57,8 @@ pip install -r requirements.txt
 
    `auto_dl_torrent_from_seedbox`设置为`True`时，脚本会自动从盒子下载种子文件，否则需要手动从盒子导出种子文件或者你本地就有种子文件，总之**就放在`original_torrent_path`里**。
 
+   如果本地已存在的原始`.torrent`无法严格解析，脚本不会仅因为文件存在就跳过下载；对于“有效 bencode 后存在尾随垃圾”的文件，会记录明确日志并在开启`auto_dl_torrent_from_seedbox`时尝试从盒子重新下载覆盖。新下载的临时`.torrent`必须能被解析后才会替换本地最终文件，避免把损坏传输结果落盘成正式原种。
+
    `exit_on_finish`设置为`True`时，脚本会在所有种子都完成回传后自动退出，否则脚本会持续运行监测。
 
    脚本会复用 qBittorrent 登录会话，并优先通过 qBittorrent 的`sync/maindata`增量快照维护下载器状态；如果客户端或接口不支持增量同步，会自动回退到`torrents_info()`全量列表，保证兼容性。
