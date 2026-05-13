@@ -5,6 +5,11 @@ transfer:
   bt_path: ../auto-seedbox-transfer-workspace/bt
   # 种子传输状态记录文件
   torrent_info_path: ../auto-seedbox-transfer-workspace/torrent_info.json
+  # 当盒子 qB 任务存在但资源文件 missingFiles 时的处理策略；必填
+  # pause_transfer: 默认建议，阻断该任务并等待人工处理，不删除、不重校验、不重建
+  # skip_transfer: 标记跳过，不删除远端任务或文件
+  # force_recheck_and_rebuild_bt: 删除错误 BT 任务但不删文件，重校验原种，等待恢复后重建 BT
+  seedbox_origin_data_missing_policy: pause_transfer
   # 盒子每轮最大添加种子数
   max_once_add: 5
   # 盒子 BT 种子添加时的分类
@@ -64,4 +69,3 @@ downloaders:
   url: http://127.0.0.1:8080
   username: admin
   password: YOUR_PASSWORD
-

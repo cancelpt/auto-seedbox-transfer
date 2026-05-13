@@ -2,6 +2,17 @@ from pydantic import BaseModel
 
 DEFAULT_RETRY_LIMIT = 3
 
+SEEDBOX_BT_HEALTH_UNKNOWN = "unknown"
+SEEDBOX_BT_HEALTH_READY = "ready"
+SEEDBOX_BT_HEALTH_MISSING_TORRENT = "missing_torrent"
+SEEDBOX_BT_HEALTH_MISSING_FILES = "missing_files"
+
+ORIGIN_DATA_STATUS_OK = "ok"
+ORIGIN_DATA_STATUS_MISSING_FILES = "missing_files"
+ORIGIN_DATA_STATUS_BLOCKED = "blocked"
+ORIGIN_DATA_STATUS_RECHECK_REQUESTED = "recheck_requested"
+ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD = "waiting_for_redownload"
+
 
 class TorrentTransfer(BaseModel):
     hash: str
@@ -11,6 +22,9 @@ class TorrentTransfer(BaseModel):
     is_bt_in_seed_box: bool = False
     is_bt_in_home_dl: bool = False
     is_torrent_in_home_dl: bool = False
+    seedbox_bt_health: str = SEEDBOX_BT_HEALTH_UNKNOWN
+    seedbox_origin_data_status: str = ORIGIN_DATA_STATUS_OK
+    seedbox_origin_data_recheck_count: int = 0
     download_retry_count: int = 0
     seedbox_add_retry_count: int = 0
     home_add_retry_count: int = 0
