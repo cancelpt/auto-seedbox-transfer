@@ -92,6 +92,7 @@ def test_main_run_once_acquires_lock_before_state_manager_init(monkeypatch, tmp_
     monkeypatch.setattr(main_module, "SeedBoxManager", DummyManager)
     monkeypatch.setattr(main_module, "HomeManager", DummyManager)
     monkeypatch.setattr(main_module, "run_once_cycle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
 
     main_module.main(
         "config.yaml",
@@ -123,6 +124,7 @@ def test_main_run_once_short_circuits_when_lock_not_acquired(monkeypatch, tmp_pa
     monkeypatch.setattr(main_module, "try_acquire_lock", lambda _path: None)
     monkeypatch.setattr(main_module, "release_lock", lambda _handle: None)
     monkeypatch.setattr(main_module, "StateManager", lambda _path: order.append("state"))
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
 
     main_module.main(
         "config.yaml",
@@ -132,6 +134,103 @@ def test_main_run_once_short_circuits_when_lock_not_acquired(monkeypatch, tmp_pa
         run_once=True,
     )
 
+    assert order == []
+
+
+def test_main_audit_prints_report_without_starting_managers(monkeypatch, tmp_path, capsys):
+    config = SimpleNamespace(
+        transfer=SimpleNamespace(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+        )
+    )
+    calls = []
+
+    class DummyStateManager:
+        def __init__(self, _path):
+            calls.append("state")
+
+    class DummyAuditManager:
+        def __init__(self, *_args, **_kwargs):
+            calls.append("audit_manager")
+
+        def build_report(self):
+            return {"route": {"seed_box_name": "seedbox", "home_dl_name": "home"}}
+
+    monkeypatch.setattr(main_module.YAMLConfigHandler, "load", staticmethod(lambda _path: config))
+    monkeypatch.setattr(main_module, "ensure_directory_exists", lambda _path: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
+    monkeypatch.setattr(main_module, "StateManager", DummyStateManager)
+    monkeypatch.setattr(main_module, "create_downloader_clients", lambda *_args: ("seed-client", "home-client"))
+    monkeypatch.setattr(main_module, "AuditManager", DummyAuditManager)
+    monkeypatch.setattr(main_module, "LocalManager", lambda *_args, **_kwargs: calls.append("local"))
+
+    main_module.main("config.yaml", "seedbox", "home", None, audit=True)
+
+    assert calls == ["state", "audit_manager"]
+    assert '"seed_box_name": "seedbox"' in capsys.readouterr().out
+
+
+def test_main_apply_cleanup_prints_deleted_plan(monkeypatch, tmp_path, capsys):
+    order = []
+    config = SimpleNamespace(
+        transfer=SimpleNamespace(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+        )
+    )
+
+    class DummyStateManager:
+        def __init__(self, _path):
+            pass
+
+    class DummyAuditManager:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def apply_cleanup(self):
+            return {"deleted_from_home_qb": ["hash"]}
+
+    monkeypatch.setattr(main_module.YAMLConfigHandler, "load", staticmethod(lambda _path: config))
+    monkeypatch.setattr(main_module, "ensure_directory_exists", lambda _path: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
+    monkeypatch.setattr(main_module, "try_acquire_lock", lambda _path: order.append("lock") or object())
+    monkeypatch.setattr(main_module, "release_lock", lambda _handle: order.append("release"))
+    monkeypatch.setattr(main_module, "StateManager", lambda _path: order.append("state") or DummyStateManager(_path))
+    monkeypatch.setattr(main_module, "create_downloader_clients", lambda *_args: ("seed-client", "home-client"))
+    monkeypatch.setattr(main_module, "fetch_transmission_torrents", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(main_module, "AuditManager", DummyAuditManager)
+
+    main_module.main("config.yaml", "seedbox", "home", None, apply_cleanup=True)
+
+    assert '"deleted_from_home_qb": [' in capsys.readouterr().out
+    assert order == ["lock", "state", "release"]
+
+
+def test_main_apply_cleanup_skips_when_lock_not_acquired(monkeypatch, tmp_path, capsys):
+    config = SimpleNamespace(
+        transfer=SimpleNamespace(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+        )
+    )
+    order = []
+
+    monkeypatch.setattr(main_module.YAMLConfigHandler, "load", staticmethod(lambda _path: config))
+    monkeypatch.setattr(main_module, "ensure_directory_exists", lambda _path: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
+    monkeypatch.setattr(main_module, "try_acquire_lock", lambda _path: None)
+    monkeypatch.setattr(main_module, "release_lock", lambda _handle: order.append("release"))
+    monkeypatch.setattr(main_module, "StateManager", lambda _path: order.append("state"))
+
+    main_module.main("config.yaml", "seedbox", "home", None, apply_cleanup=True)
+
+    output = capsys.readouterr().out
+    assert '"skipped": true' in output
+    assert "another run is already active" in output
     assert order == []
 
 

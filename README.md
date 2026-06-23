@@ -37,9 +37,9 @@ pip install -r requirements.txt
    cp config.example.yaml config.yaml
    ```
 
-   假设你盒子通过 Vertex 自动删种，并且**设置了`BT`和`To`分类的种子不会被删除**，其中`To`是你想**回传到本地下载器的种子分类**，那么配置`seed_box_bt_category`为`BT`用于临时 BT 种子分类，配置`want_torrent_category`为`To`用于回传的种子分类。
+   假设你盒子通过 Vertex 自动删种，并且**设置了`BT`和`To`分类的种子不会被删除**，其中`To`是你想**从盒子扫描并回传到本地下载器的原始种分类**，那么配置`seed_box_bt_category`为`BT`用于临时 BT 种子分类，配置盒子下载器的`source_categories`为`To`用于回传的源分类。
    
-   `want_torrent_category  `: 支持单个字符串或列表（如 `["To", "Too"]`，或者就是`"To"`），脚本会监控这些分类下的所有种子。
+   `source_categories`: 支持单个字符串或列表（如 `["To", "Too"]`，或者就是`"To"`），脚本会监控 seedbox 下载器这些分类下的所有原始种。旧配置名`want_torrent_category`仍兼容，但新配置建议使用`source_categories`，避免误解为 home 下载器的配置。
 
    `seed_box_ignore_complete_time`: 设置种子完成多长时间后才开始转移（单位：秒）。如果种子完成时间小于该值，将被忽略。如果此时没有其他可处理的种子，脚本会提前退出（需开启 `exit_on_finish`）。
   
@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
    `pause_after_add_origin`: 默认为 `False`（添加原始种子后直接开始本地下载器做种）。如果设为 `True`，则添加原始种子后暂停，等待用户手动做种。
 
-   `home_origin_tags`: 默认不添加标签，如果你使用一些转移做种插件，它们通常要你配置转移做种的种子标签，此时可以配置这个选项。
+   `home_origin_tags`: 默认不添加用户自定义标签，如果你使用一些转移做种插件，它们通常要你配置转移做种的种子标签，此时可以配置这个选项。脚本在任务流转期间会给 AST 管理的 qB 任务添加机器可读标签，例如`ast`、`ast:route:remote-qb->home-qb`、`ast:origin:<hash>`。一旦任务进入最终 ORIGIN 状态，HomeManager 会清掉全部 AST 管理标签，只保留用户自定义标签；如果历史任务上残留了 AST 标签，也会在进入最终状态时顺手清理。
 
    `home_origin_temp_category`和`home_origin_category`影响不大，选择你喜欢的分类即可，用于方便在本地下载器上区分哪些种子是由盒子回传的。
 
@@ -69,7 +69,7 @@ pip install -r requirements.txt
    
    `torrents_path`是盒子上的**种子文件存放路径**，对于大部分盒子，这个路径通常是 `/home/{username}/.local/share/qBittorrent/BT_backup`。`incoming_port`是盒子的传入端口，**如果没有配置`bt_trackers`，那么请确保传入端口可正确，而不是随机**。
 
-   `downloaders`配置项内`want_torrent_category`对于本地下载器不需要配置。
+   `downloaders`配置项内`source_categories`只应配置在`--seed_box_name`对应的下载器上。本地下载器不需要配置该字段；如果配置了，脚本会记录 warning，因为当前链路不会读取本地下载器的源分类。
 
 1. **运行程序**
    
@@ -82,6 +82,11 @@ pip install -r requirements.txt
     - `--target_download_dir`: (选填) 目标下载目录，如果不配置，则默认使用本地下载器的下载目录。
     - `--config_path`: (选填) 配置文件路径，默认为 `config.yaml`。
     - `--run_once`: (选填) 单次执行并退出，同时使用`{torrent_info_path}.lock`避免定时任务并发重复运行；适合放到 cron。脚本还会生成内部状态文件锁`{torrent_info_path}.state.lock`，这是正常的并发保护文件。
+    - `--audit`: (选填) 只读输出 AST 状态、qB 分类计数和孤儿任务对账报告，不执行同步。
+    - `--cleanup-plan`: (选填) 只读输出可清理残留计划，不删除任务。自动安全项只包含：状态已同步但 home BT 残留、TR 同 hash 完整、或 AST tag 能反查 origin hash 且 TR 中该 origin hash 完整；仅同名匹配会进入人工复核。
+    - `--apply-cleanup`: (选填) 执行 cleanup plan 中安全项，默认`delete_files=False`，不删除资源文件。
+    - `--transmission_rpc_url`: (选填) Transmission RPC 地址；传入后 audit/cleanup 会用 TR 完整任务作为“已在最终做种器存在”的证据。
+    - `--transmission_username` / `--transmission_password`: (选填) Transmission RPC 认证。
 
 
     ```bash
@@ -92,6 +97,14 @@ pip install -r requirements.txt
 
     ```bash
     python main.py --seed_box_name remote-qb --home_dl_name home-qb --target_download_dir /Disk1/Downloads/seedbox --run_once
+    ```
+
+    对账和清理残留时推荐先 dry-run：
+
+    ```bash
+    python main.py --seed_box_name remote-qb --home_dl_name home-qb --audit
+    python main.py --seed_box_name remote-qb --home_dl_name home-qb --cleanup-plan --transmission_rpc_url http://127.0.0.1:9091/transmission/rpc
+    python main.py --seed_box_name remote-qb --home_dl_name home-qb --apply-cleanup --transmission_rpc_url http://127.0.0.1:9091/transmission/rpc
     ```
 
     这里，`remote-qb`：盒子下载器名称，`home-qb`：本地下载器名称，`/Disk1/Downloads/seedbox`：回传的下载目录。

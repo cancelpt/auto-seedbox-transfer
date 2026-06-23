@@ -15,7 +15,8 @@ from transfer.torrent_transfer import (
     SEEDBOX_BT_HEALTH_MISSING_FILES,
     SEEDBOX_BT_HEALTH_MISSING_TORRENT,
 )
-from utils.config import Config, SeedBox, SeedboxOriginDataMissingPolicy
+from utils.ast_tags import build_bt_ast_tags, build_origin_ast_tags, extract_ast_tags, is_ast_tag, merge_tags
+from utils.config import Config, SeedBox, SeedboxOriginDataMissingPolicy, resolve_downloader_network_profile
 from utils.downloader_utils import DownloaderHelper, get_downloader_client
 from utils.qbittorrent_snapshot import QbittorrentSnapshot
 
@@ -40,10 +41,8 @@ class HomeManager:
         self.trigger_seedbox = trigger_seedbox
         self._init_configs()
         self.home_helper: DownloaderHelper = get_downloader_client(
-            name=self.home_dl_config.name,
-            url=self.home_dl_config.url,
-            username=self.home_dl_config.username,
-            password=self.home_dl_config.password,
+            downloader=self.home_dl_config,
+            network_profile=self.home_network_profile,
         )
         self.home_snapshot = QbittorrentSnapshot(self.home_helper.client)
 
@@ -56,6 +55,7 @@ class HomeManager:
         self.home_dl_config = next(filter(lambda x: x.name == self.home_dl_name, self.config.downloaders), None)
         if self.home_dl_config is None:
             raise ValueError(f"Home downloader config not found: {self.home_dl_name}")
+        self.home_network_profile = resolve_downloader_network_profile(self.config, self.home_dl_config)
 
     def _record_home_failure(self, state, error_message: str, skip_reason: str):
         attempts = state.record_failure(
@@ -70,17 +70,61 @@ class HomeManager:
             logger.warning(f"{error_message}. Attempt {attempts}/{DEFAULT_RETRY_LIMIT}")
         self.state_manager.update(state)
 
+    def _ast_tags(self, state):
+        return build_bt_ast_tags(self.seed_box_name, self.home_dl_name, state.hash)
+
+    def _origin_ast_tags(self, state):
+        return build_origin_ast_tags(self.seed_box_name, self.home_dl_name, state.hash, state.bt_hash)
+
+    def _cleanup_final_origin_tags(self, home_dl: Client, state, origin_torrent):
+        tags = getattr(origin_torrent, "tags", "") if origin_torrent is not None else ""
+        ast_tags = extract_ast_tags(tags)
+        if not ast_tags:
+            return
+        if hasattr(home_dl, "torrents_remove_tags"):
+            for tag in ast_tags:
+                home_dl.torrents_remove_tags(tags=tag, torrent_hashes=state.hash)
+
+    def _cleanup_orphaned_ast_global_tags(self, home_dl: Client):
+        if not hasattr(home_dl, "torrents_tags") or not hasattr(home_dl, "torrents_delete_tags"):
+            return
+
+        existing_tags = list(home_dl.torrents_tags() or [])
+        existing_ast_tags = [tag for tag in existing_tags if is_ast_tag(tag)]
+        if not existing_ast_tags:
+            return
+
+        in_use = set()
+        for torrent in self.home_snapshot.torrents():
+            in_use.update(extract_ast_tags(getattr(torrent, "tags", "")))
+
+        orphaned = []
+        seen = set()
+        for tag in existing_ast_tags:
+            normalized = tag.strip()
+            if normalized in in_use or tag in seen:
+                continue
+            seen.add(tag)
+            orphaned.append(tag)
+
+        if orphaned:
+            for tag in orphaned:
+                home_dl.torrents_delete_tags(tags=tag)
+
     @staticmethod
     def _seedbox_source_unavailable(state) -> bool:
+        origin_status = (state.seedbox_origin_data_status or "").strip().lower()
         return (
             state.seedbox_bt_health in {SEEDBOX_BT_HEALTH_MISSING_FILES, SEEDBOX_BT_HEALTH_MISSING_TORRENT}
-            or state.seedbox_origin_data_status
+            or origin_status
             in {
                 ORIGIN_DATA_STATUS_MISSING_FILES,
                 ORIGIN_DATA_STATUS_BLOCKED,
                 ORIGIN_DATA_STATUS_RECHECK_REQUESTED,
                 ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD,
             }
+            or origin_status.startswith("recovery_")
+            or origin_status.startswith("retryable_abandon")
         )
 
     def _handle_unavailable_seedbox_source_for_home_bt(self, home_dl: Client, state) -> bool:
@@ -156,6 +200,7 @@ class HomeManager:
         """Run home management tasks."""
         try:
             self._process_home_torrents()
+            self._cleanup_orphaned_ast_global_tags(self.home_helper.client)
         except Exception as e:
             logger.error(f"Error in HomeManager: {e}")
 
@@ -191,6 +236,9 @@ class HomeManager:
                     and not state.is_bt_in_home_dl
                     and not state.is_torrent_in_home_dl
                 ):
+                    if self._seedbox_source_unavailable(state):
+                        self._handle_unavailable_seedbox_source_for_home_bt(home_dl, state)
+                        continue
                     if not os.path.exists(state.bt_torrent_file_path):
                         self._record_home_failure(
                             state,
@@ -204,6 +252,7 @@ class HomeManager:
                         save_path=self.target_download_dir,
                         category=self.config.transfer.home_bt_category,
                         is_paused=False,
+                        tags=self._ast_tags(state),
                     )
                     if "Ok." in str(result):
                         state.is_bt_in_home_dl = True
@@ -248,9 +297,7 @@ class HomeManager:
                             category=self.config.transfer.home_origin_temp_category,
                             is_skip_checking=True,
                             is_paused=self.config.transfer.pause_after_add_origin,
-                            tags=self.config.transfer.home_origin_tags
-                            if self.config.transfer.home_origin_tags
-                            else None,
+                            tags=merge_tags(self.config.transfer.home_origin_tags, self._origin_ast_tags(state)),
                         )
                         if "Ok." in str(result):
                             state.reset_failures("home_add_retry_count")
@@ -267,17 +314,19 @@ class HomeManager:
                 # Scenario 3: Origin is at home (Temporary),
                 # BT is also at home -> verify Origin completed, then delete BT
                 if state.hash in home_dl_hashes and state.bt_hash in home_dl_hashes:
+                    origin_torrent = self.home_snapshot.torrent(state.hash)
                     if not self._is_torrent_completed(home_dl, state.hash, self.home_snapshot):
                         self._request_origin_recheck_if_needed(
                             home_dl,
                             state,
-                            self.home_snapshot.torrent(state.hash),
+                            origin_torrent,
                             self.home_snapshot.torrent(state.bt_hash),
                         )
                         # Origin not yet completed, wait
                         continue
                     logger.info(f"Origin completed and BT both found at home. Deleting BT: {state.bt_hash}")
                     home_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
+                    self._cleanup_final_origin_tags(home_dl, state, origin_torrent)
 
                     # Set category to final and mark as synced
                     self._ensure_home_category(home_dl, self.config.transfer.home_origin_category)
@@ -304,6 +353,7 @@ class HomeManager:
                     # Only mark as synced after Origin is fully downloaded
                     # Note: Origin is a PT torrent, do not add peers or modify category
                     if self._is_torrent_completed(home_dl, state.hash, self.home_snapshot):
+                        self._cleanup_final_origin_tags(home_dl, state, self.home_snapshot.torrent(state.hash))
                         state.is_torrent_in_home_dl = True
                         state.home_origin_recheck_count = 0
                         state.reset_failures("home_add_retry_count")

@@ -10,6 +10,10 @@ transfer:
   # skip_transfer: 标记跳过，不删除远端任务或文件
   # force_recheck_and_rebuild_bt: 删除错误 BT 任务但不删文件，重校验原种，等待恢复后重建 BT
   seedbox_origin_data_missing_policy: pause_transfer
+  # 原始种进入 missingFiles 后，AST 自动发起恢复的最大重校验次数
+  seedbox_origin_recovery_max_rechecks: 1
+  # 原始种恢复阶段的最长观察时间（秒）；仅用于源恢复，不约束正常大种下载耗时
+  seedbox_origin_recovery_window_seconds: 600
   # 盒子每轮最大添加种子数
   max_once_add: 5
   # 盒子 BT 种子添加时的分类
@@ -61,9 +65,10 @@ downloaders:
   url: http://123.123.123.123:8080
   username: admin
   password: YOUR_QB_PASSWORD
-  # 需要回传的种子分类，允许多个分类
-  # want_torrent_category: ["To", "Too"]
-  want_torrent_category: To
+  # 需要从该盒子下载器扫描并回传的原始种分类，允许多个分类
+  # source_categories: ["To", "Too"]
+  source_categories: To
+  # 兼容旧配置名：want_torrent_category 等价于 source_categories，但不建议新配置继续使用
 
 - name: home-qb
   url: http://127.0.0.1:8080

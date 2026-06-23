@@ -54,7 +54,11 @@ class LocalManager:
                     try:
                         file_stat = os.stat(torrent_file_path)
                         cached_entry = self._torrent_file_cache.get(torrent_file_path)
-                        if cached_entry and cached_entry[0] == file_stat.st_mtime_ns and cached_entry[1] == file_stat.st_size:
+                        if (
+                            cached_entry
+                            and cached_entry[0] == file_stat.st_mtime_ns
+                            and cached_entry[1] == file_stat.st_size
+                        ):
                             cached_state = self.state_manager.get(cached_entry[2])
                             if cached_state and (cached_state.is_skipped or cached_state.has_bt_torrent()):
                                 continue

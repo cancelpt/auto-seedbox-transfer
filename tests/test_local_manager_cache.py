@@ -1,4 +1,3 @@
-import threading
 from pathlib import Path
 
 import managers.local_manager as local_manager_module

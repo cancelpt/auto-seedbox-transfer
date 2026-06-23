@@ -1,5 +1,6 @@
 import argparse
 import fcntl
+import json
 import logging
 import os
 import sys
@@ -8,11 +9,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from managers.audit_manager import AuditManager, fetch_transmission_torrents
 from managers.home_manager import HomeManager
 from managers.local_manager import LocalManager
 from managers.seedbox_manager import SeedBoxManager
 from managers.state_manager import StateManager
-from utils.config import Config, YAMLConfigHandler
+from utils.config import Config, YAMLConfigHandler, resolve_downloader_network_profile, validate_route_config
+from utils.downloader_utils import get_downloader_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -108,9 +111,35 @@ def run_once_cycle(local_manager, seedbox_manager, home_manager, shutdown_event=
         manager.run()
 
 
-def main(config_path, seed_box_name, home_dl_name, target_download_dir, run_once=False):
+def create_downloader_clients(config: Config, seed_box_name: str, home_dl_name: str):
+    seedbox_downloader, home_downloader = validate_route_config(config, seed_box_name, home_dl_name)
+    seedbox_client = get_downloader_client(
+        downloader=seedbox_downloader,
+        network_profile=resolve_downloader_network_profile(config, seedbox_downloader),
+    ).client
+    home_client = get_downloader_client(
+        downloader=home_downloader,
+        network_profile=resolve_downloader_network_profile(config, home_downloader),
+    ).client
+    return seedbox_client, home_client
+
+
+def main(
+    config_path,
+    seed_box_name,
+    home_dl_name,
+    target_download_dir,
+    run_once=False,
+    audit=False,
+    cleanup_plan=False,
+    apply_cleanup=False,
+    transmission_rpc_url="",
+    transmission_username="",
+    transmission_password="",
+):
     # Load configuration
     config: Config = YAMLConfigHandler.load(config_path)
+    validate_route_config(config, seed_box_name, home_dl_name)
 
     # Validate and create directories
     ensure_directory_exists(config.transfer.original_torrent_path)
@@ -122,14 +151,51 @@ def main(config_path, seed_box_name, home_dl_name, target_download_dir, run_once
         ensure_directory_exists(str(torrent_info_path.parent))
 
     lock_file = None
-    if run_once:
+    if run_once or apply_cleanup:
         lock_path = f"{config.transfer.torrent_info_path}.lock"
         lock_file = try_acquire_lock(lock_path)
         if lock_file is None:
-            logger.info(f"Another run is already active, skipping this cron invocation: {lock_path}")
+            logger.info(f"Another run is already active, skipping this invocation: {lock_path}")
+            if apply_cleanup:
+                print(
+                    json.dumps(
+                        {
+                            "skipped": True,
+                            "reason": f"another run is already active: {lock_path}",
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             return
 
     try:
+        if audit or cleanup_plan or apply_cleanup:
+            state_manager = StateManager(config.transfer.torrent_info_path)
+            seedbox_client, home_client = create_downloader_clients(config, seed_box_name, home_dl_name)
+            tr_torrents = fetch_transmission_torrents(
+                transmission_rpc_url,
+                transmission_username,
+                transmission_password,
+            )
+            audit_manager = AuditManager(
+                config,
+                state_manager,
+                seed_box_name,
+                home_dl_name,
+                seedbox_client,
+                home_client,
+                tr_torrents=tr_torrents,
+            )
+            if apply_cleanup:
+                result = audit_manager.apply_cleanup()
+            elif cleanup_plan:
+                result = audit_manager.build_cleanup_plan()
+            else:
+                result = audit_manager.build_report()
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
         # Initialize State Manager after lock acquisition, so run_once never loads stale state.
         state_manager = StateManager(config.transfer.torrent_info_path)
 
@@ -226,6 +292,12 @@ if __name__ == "__main__":
         action="store_true",
         help="单次执行并退出，同时通过状态文件锁避免定时任务并发重复运行",
     )
+    parser.add_argument("--audit", action="store_true", help="只读输出 AST/qB 对账报告，不执行同步")
+    parser.add_argument("--cleanup-plan", action="store_true", help="只读输出可清理残留计划，不删除任务")
+    parser.add_argument("--apply-cleanup", action="store_true", help="执行 cleanup plan 中安全项，默认不删除文件")
+    parser.add_argument("--transmission_rpc_url", type=str, default="", help="可选 Transmission RPC URL")
+    parser.add_argument("--transmission_username", type=str, default="", help="可选 Transmission 用户名")
+    parser.add_argument("--transmission_password", type=str, default="", help="可选 Transmission 密码")
 
     args = parser.parse_args()
 
@@ -235,4 +307,10 @@ if __name__ == "__main__":
         args.home_dl_name,
         args.target_download_dir,
         args.run_once,
+        audit=args.audit,
+        cleanup_plan=args.cleanup_plan,
+        apply_cleanup=args.apply_cleanup,
+        transmission_rpc_url=args.transmission_rpc_url,
+        transmission_username=args.transmission_username,
+        transmission_password=args.transmission_password,
     )
