@@ -3,4 +3,5 @@ PyYAML~=6.0.2
 pydantic~=2.8.2
 qbittorrent-api
 paramiko
+PySocks
 bencodepy

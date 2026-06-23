@@ -16,19 +16,42 @@ from transfer.torrent_transfer import (
     ORIGIN_DATA_STATUS_MISSING_FILES,
     ORIGIN_DATA_STATUS_OK,
     ORIGIN_DATA_STATUS_RECHECK_REQUESTED,
+    ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_PAUSED_DL,
+    ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_RECHECK_BUDGET_EXHAUSTED,
+    ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_RECOVERY_TIMEOUT,
     ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD,
     SEEDBOX_BT_HEALTH_MISSING_FILES,
     SEEDBOX_BT_HEALTH_MISSING_TORRENT,
     SEEDBOX_BT_HEALTH_READY,
     TorrentTransfer,
 )
-from utils.config import Config, SeedboxOriginDataMissingPolicy
+from utils.ast_tags import build_bt_ast_tags, extract_ast_tags, is_ast_tag
+from utils.config import (
+    Config,
+    SeedboxOriginDataMissingPolicy,
+    resolve_downloader_network_profile,
+    resolve_seedbox_network_profile,
+)
 from utils.downloader_utils import DownloaderHelper, get_downloader_client
 from utils.qbittorrent_snapshot import QbittorrentSnapshot
 from utils.sftp_utils import SFTPClient
 from utils.torrent_utils import TorrentFile, TorrentTrailingDataError
 
 logger = logging.getLogger(__name__)
+
+
+ACTIVE_ORIGIN_QB_STATES = {
+    "downloading",
+    "stalledDL",
+    "queuedDL",
+    "forcedDL",
+    "uploading",
+    "stalledUP",
+    "queuedUP",
+    "forcedUP",
+}
+RECOVERY_PENDING_QB_STATES = {"checkingDL", "checkingUP", "checkingResumeData"}
+RECOVERY_RETRYABLE_ABANDON_PREFIX = "retryable_abandon"
 
 
 class SeedBoxManager:
@@ -56,10 +79,8 @@ class SeedBoxManager:
         self.async_downloads = async_downloads
         self._init_configs()
         self.seed_box_helper: DownloaderHelper = get_downloader_client(
-            name=self.seed_box_dl_config.name,
-            url=self.seed_box_dl_config.url,
-            username=self.seed_box_dl_config.username,
-            password=self.seed_box_dl_config.password,
+            downloader=self.seed_box_dl_config,
+            network_profile=self.seed_box_downloader_network_profile,
         )
         self.seed_box_snapshot = QbittorrentSnapshot(self.seed_box_helper.client)
 
@@ -80,10 +101,20 @@ class SeedBoxManager:
         if self.home_dl_config is None:
             raise ValueError(f"Home downloader config not found: {self.home_dl_name}")
 
+        self.seed_box_downloader_network_profile = resolve_downloader_network_profile(
+            self.config,
+            self.seed_box_dl_config,
+        )
+        self.seed_box_network_profile = resolve_seedbox_network_profile(
+            self.config,
+            self.seed_box_config,
+        )
+
     def run(self):
         """Run seedbox management tasks."""
         try:
             self._process_seedbox_torrents()
+            self._cleanup_orphaned_ast_global_tags(self.seed_box_helper.client)
         except Exception as e:
             logger.error(f"Error in SeedBoxManager: {e}")
 
@@ -103,8 +134,37 @@ class SeedBoxManager:
             )
             return False
         except Exception as e:
-            logger.warning(f"Local origin torrent is unreadable and will be re-downloaded from seedbox: {torrent_path}: {e}")
+            logger.warning(
+                f"Local origin torrent is unreadable and will be re-downloaded from seedbox: {torrent_path}: {e}"
+            )
             return False
+
+    def _cleanup_orphaned_ast_global_tags(self, seed_box_dl: Client):
+        if not hasattr(seed_box_dl, "torrents_tags") or not hasattr(seed_box_dl, "torrents_delete_tags"):
+            return
+
+        existing_tags = list(seed_box_dl.torrents_tags() or [])
+        existing_ast_tags = [tag for tag in existing_tags if is_ast_tag(tag)]
+        if not existing_ast_tags:
+            return
+
+        self.seed_box_snapshot.refresh()
+
+        in_use = set()
+        for torrent in self.seed_box_snapshot.torrents():
+            in_use.update(extract_ast_tags(getattr(torrent, "tags", "")))
+
+        orphaned = []
+        seen = set()
+        for tag in existing_ast_tags:
+            normalized = tag.strip()
+            if normalized in in_use or tag in seen:
+                continue
+            seen.add(tag)
+            orphaned.append(tag)
+
+        for tag in orphaned:
+            seed_box_dl.torrents_delete_tags(tags=tag)
 
     def _get_or_create_transfer(self, torrent_hash: str) -> TorrentTransfer:
         state = self.state_manager.get(torrent_hash)
@@ -118,7 +178,13 @@ class SeedBoxManager:
         self.state_manager.update(state)
         return state
 
-    def _record_transfer_failure(self, state: TorrentTransfer, counter_field: str, error_message: str, skip_reason: str):
+    def _record_transfer_failure(
+        self,
+        state: TorrentTransfer,
+        counter_field: str,
+        error_message: str,
+        skip_reason: str,
+    ):
         attempts = state.record_failure(
             counter_field,
             error_message,
@@ -134,6 +200,87 @@ class SeedBoxManager:
     @staticmethod
     def _is_missing_files(torrent) -> bool:
         return getattr(torrent, "state", "") == "missingFiles"
+
+    @staticmethod
+    def _current_qb_state(torrent) -> str:
+        return getattr(torrent, "state", "") if torrent is not None else ""
+
+    @staticmethod
+    def _is_retryable_abandoned(state: TorrentTransfer) -> bool:
+        return (state.seedbox_origin_data_status or "").startswith(RECOVERY_RETRYABLE_ABANDON_PREFIX)
+
+    @staticmethod
+    def _is_origin_active_state(qb_state: str) -> bool:
+        return qb_state in ACTIVE_ORIGIN_QB_STATES
+
+    @staticmethod
+    def _is_recovery_pending_qb_state(qb_state: str) -> bool:
+        return qb_state in RECOVERY_PENDING_QB_STATES
+
+    @staticmethod
+    def _is_recovery_healthy_qb_state(qb_state: str) -> bool:
+        return (
+            bool(qb_state)
+            and qb_state not in {"missingFiles", "pausedDL", "error"}
+            and qb_state not in RECOVERY_PENDING_QB_STATES
+        )
+
+    def _capture_last_known_origin_state(self, state: TorrentTransfer, origin_torrent) -> bool:
+        qb_state = self._current_qb_state(origin_torrent)
+        if self._is_origin_active_state(qb_state) and state.seedbox_origin_last_known_qb_state != qb_state:
+            state.seedbox_origin_last_known_qb_state = qb_state
+            return True
+        return False
+
+    def _mark_retryable_abandoned(self, state: TorrentTransfer, status: str, reason: str) -> bool:
+        updated = False
+        if state.seedbox_origin_data_status != status:
+            state.seedbox_origin_data_status = status
+            updated = True
+        state.last_error = reason
+        if state.seedbox_origin_recovery_started_at:
+            state.seedbox_origin_recovery_started_at = 0.0
+            updated = True
+        return updated
+
+    def _clear_retryable_abandon_if_source_changed(self, state: TorrentTransfer, origin_torrent) -> bool:
+        if not self._is_retryable_abandoned(state):
+            return False
+
+        qb_state = self._current_qb_state(origin_torrent)
+        status = state.seedbox_origin_data_status or ""
+
+        if status == ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_PAUSED_DL:
+            if qb_state and qb_state != "pausedDL" and qb_state != "missingFiles":
+                state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_OK
+                state.last_error = ""
+                return True
+            return False
+
+        if qb_state and qb_state != "missingFiles":
+            if self._is_recovery_pending_qb_state(qb_state):
+                state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD
+                state.seedbox_origin_recovery_started_at = time.time()
+            else:
+                state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_OK
+                state.seedbox_origin_data_recheck_count = 0
+                state.seedbox_origin_recovery_started_at = 0.0
+                state.last_error = ""
+            return True
+
+        return False
+
+    def _should_auto_resume_origin(self, state: TorrentTransfer, origin_torrent) -> bool:
+        qb_state = self._current_qb_state(origin_torrent)
+        return self._is_origin_active_state(state.seedbox_origin_last_known_qb_state) and qb_state != "pausedDL"
+
+    def _recovery_budget_exhausted(self, state: TorrentTransfer) -> bool:
+        return state.seedbox_origin_data_recheck_count >= self.config.transfer.seedbox_origin_recovery_max_rechecks
+
+    def _recovery_timed_out(self, state: TorrentTransfer, current_time: float) -> bool:
+        started_at = state.seedbox_origin_recovery_started_at
+        window = self.config.transfer.seedbox_origin_recovery_window_seconds
+        return bool(started_at and window > 0 and (current_time - started_at) >= window)
 
     @staticmethod
     def _is_waiting_for_origin_recovery(state: TorrentTransfer) -> bool:
@@ -168,19 +315,29 @@ class SeedBoxManager:
             return updated
 
         if policy == SeedboxOriginDataMissingPolicy.force_recheck_and_rebuild_bt:
-            if bt_torrent is not None and state.bt_hash and state.seedbox_origin_data_recheck_count == 0:
+            if self._recovery_budget_exhausted(state):
+                return self._mark_retryable_abandoned(
+                    state,
+                    ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_RECHECK_BUDGET_EXHAUSTED,
+                    reason or "Seedbox origin recovery budget exhausted",
+                )
+
+            if bt_torrent is not None and state.bt_hash:
                 logger.warning(f"Deleting unusable BT torrent from seedbox without files: {state.bt_hash}")
                 seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=False)
                 state.is_bt_in_seed_box = False
                 state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_FILES
                 updated = True
 
-            if origin_torrent is not None and state.seedbox_origin_data_recheck_count == 0:
+            if origin_torrent is not None:
                 logger.warning(f"Requesting seedbox origin torrent recheck: {state.hash}")
                 seed_box_dl.torrents_recheck(torrent_hashes=state.hash)
                 state.seedbox_origin_data_recheck_count += 1
+                state.seedbox_origin_recovery_started_at = time.time()
                 state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_RECHECK_REQUESTED
                 updated = True
+                if self._should_auto_resume_origin(state, origin_torrent) and hasattr(seed_box_dl, "torrents_resume"):
+                    seed_box_dl.torrents_resume(torrent_hashes=state.hash)
             return updated
 
         state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_BLOCKED
@@ -195,6 +352,12 @@ class SeedBoxManager:
         if state.seedbox_origin_data_recheck_count:
             state.seedbox_origin_data_recheck_count = 0
             updated = True
+        if state.seedbox_origin_recovery_started_at:
+            state.seedbox_origin_recovery_started_at = 0.0
+            updated = True
+        if state.last_error:
+            state.last_error = ""
+            updated = True
         return updated
 
     def _sync_existing_transfer_state(self, seed_box_torrent_hashes: set[str], seed_box_dl: Client):
@@ -206,6 +369,11 @@ class SeedBoxManager:
             origin_torrent = self.seed_box_snapshot.torrent(state.hash)
             bt_torrent = self.seed_box_snapshot.torrent(state.bt_hash) if state.bt_hash else None
             source_missing_detected = False
+            current_time = time.time()
+            current_origin_state = self._current_qb_state(origin_torrent)
+
+            updated |= self._capture_last_known_origin_state(state, origin_torrent)
+            updated |= self._clear_retryable_abandon_if_source_changed(state, origin_torrent)
 
             if state.bt_hash and state.bt_hash in seed_box_torrent_hashes and bt_torrent is not None:
                 if self._is_missing_files(bt_torrent):
@@ -231,6 +399,34 @@ class SeedBoxManager:
                 state.seedbox_bt_health = SEEDBOX_BT_HEALTH_MISSING_TORRENT
                 updated = True
 
+            if self._is_waiting_for_origin_recovery(state):
+                if current_origin_state == "pausedDL":
+                    updated |= self._mark_retryable_abandoned(
+                        state,
+                        ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_PAUSED_DL,
+                        "Seedbox origin paused during recovery",
+                    )
+                    if updated:
+                        self.state_manager.update(state)
+                    continue
+
+                if self._is_recovery_pending_qb_state(current_origin_state):
+                    if state.seedbox_origin_data_status != ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD:
+                        state.seedbox_origin_data_status = ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD
+                        updated = True
+                    if self._recovery_timed_out(state, current_time):
+                        updated |= self._mark_retryable_abandoned(
+                            state,
+                            ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_RECOVERY_TIMEOUT,
+                            "Seedbox origin recovery timed out",
+                        )
+                    if updated:
+                        self.state_manager.update(state)
+                    continue
+
+                if self._is_recovery_healthy_qb_state(current_origin_state):
+                    updated |= self._mark_origin_data_healthy(state)
+
             if origin_torrent is not None and self._is_missing_files(origin_torrent):
                 source_missing_detected = True
                 updated |= self._apply_origin_data_missing_policy(
@@ -252,6 +448,7 @@ class SeedBoxManager:
                     origin_torrent is not None
                     and not source_missing_detected
                     and not self._is_waiting_for_origin_recovery(state)
+                    and not self._is_retryable_abandoned(state)
                 ):
                     updated |= self._mark_origin_data_healthy(state)
             else:
@@ -285,8 +482,7 @@ class SeedBoxManager:
         torrents = [torrent for torrent in all_torrents if getattr(torrent, "progress", 0) == 1]
 
         # Determine the set of managed categories for this run
-        want_cat = self.seed_box_dl_config.want_torrent_category
-        managed_want_categories = {want_cat} if isinstance(want_cat, str) else set(want_cat or [])
+        managed_want_categories = self.seed_box_dl_config.get_source_categories()
 
         # Filter torrents by category first to check if we are truly "done" for these category
         torrents = [t for t in torrents if t.category in managed_want_categories]
@@ -301,7 +497,17 @@ class SeedBoxManager:
             if self.config.transfer.exit_on_finish:
                 all_states = self.state_manager.get_all()
                 skipped_origin_hashes = {info_hash for info_hash, state in all_states.items() if state.is_skipped}
-                skipped_bt_hashes = {state.bt_hash for state in all_states.values() if state.is_skipped and state.bt_hash}
+                retryable_abandoned_origin_hashes = {
+                    info_hash for info_hash, state in all_states.items() if self._is_retryable_abandoned(state)
+                }
+                skipped_bt_hashes = {
+                    state.bt_hash for state in all_states.values() if state.is_skipped and state.bt_hash
+                }
+                retryable_abandoned_bt_hashes = {
+                    state.bt_hash
+                    for state in all_states.values()
+                    if self._is_retryable_abandoned(state) and state.bt_hash
+                }
 
                 # Check all managed origin categories and the BT category
                 managed_categories = list(managed_want_categories) + [
@@ -320,16 +526,26 @@ class SeedBoxManager:
                         eligible = [
                             t
                             for t in cat_torrents
-                            if t.hash not in skipped_origin_hashes and (current_time - t.completion_on) >= threshold
+                            if t.hash not in skipped_origin_hashes
+                            and t.hash not in retryable_abandoned_origin_hashes
+                            and (current_time - t.completion_on) >= threshold
                         ]
                         if eligible:
                             return False
                     elif cat in managed_want_categories:
-                        active = [t for t in cat_torrents if t.hash not in skipped_origin_hashes]
+                        active = [
+                            t
+                            for t in cat_torrents
+                            if t.hash not in skipped_origin_hashes and t.hash not in retryable_abandoned_origin_hashes
+                        ]
                         if active:
                             return False
                     elif cat == self.config.transfer.seed_box_bt_category:
-                        active = [t for t in cat_torrents if t.hash not in skipped_bt_hashes]
+                        active = [
+                            t
+                            for t in cat_torrents
+                            if t.hash not in skipped_bt_hashes and t.hash not in retryable_abandoned_bt_hashes
+                        ]
                         if active:
                             logger.info(f"Found torrent in category {cat}: {active[0].name}")
                             return False
@@ -441,6 +657,9 @@ class SeedBoxManager:
                 if self._is_waiting_for_origin_recovery(state):
                     logger.warning(f"Waiting for seedbox origin recovery before readding BT: {state.hash}")
                     continue
+                if self._is_retryable_abandoned(state):
+                    logger.info(f"Seedbox origin recovery abandoned for this run: {state.hash}")
+                    continue
 
                 if state.bt_hash in seed_box_torrent_hashes:
                     existing_bt_torrent = self.seed_box_snapshot.torrent(state.bt_hash)
@@ -494,6 +713,7 @@ class SeedBoxManager:
                     category=self.config.transfer.seed_box_bt_category,
                     is_skip_checking=True,
                     save_path=torrent.save_path,
+                    tags=build_bt_ast_tags(self.seed_box_name, self.home_dl_name, state.hash),
                 )
                 if "Ok." in str(result):
                     self.seed_box_snapshot.refresh()
@@ -576,6 +796,9 @@ class SeedBoxManager:
                     username=self.seed_box_config.ssh_user,
                     password=self.seed_box_config.ssh_password,
                     port=self.seed_box_config.ssh_port,
+                    proxy_endpoint=None
+                    if self.seed_box_network_profile is None
+                    else self.seed_box_network_profile.sftp,
                 )
                 max_retries = 3
                 for attempt in range(1, max_retries + 1):
@@ -620,14 +843,18 @@ class SeedBoxManager:
                                     logger.info(f"Injecting {len(trackers)} trackers into {torrent_hash}")
                                     t_file.add_trackers(trackers)
                                     if not t_file.save(temp_local_path):
-                                        raise RuntimeError(f"Failed to save torrent after tracker injection: {torrent_hash}")
+                                        raise RuntimeError(
+                                            f"Failed to save torrent after tracker injection: {torrent_hash}"
+                                        )
                             except TorrentTrailingDataError as e:
                                 raise RuntimeError(
                                     f"Downloaded seedbox torrent has trailing bencode data: {torrent_hash} "
                                     f"({e.trailing_size} trailing bytes)"
                                 ) from e
                             except Exception as e:
-                                raise RuntimeError(f"Downloaded seedbox torrent is not readable: {torrent_hash}: {e}") from e
+                                raise RuntimeError(
+                                    f"Downloaded seedbox torrent is not readable: {torrent_hash}: {e}"
+                                ) from e
 
                             # Rename to final name
                             os.replace(temp_local_path, final_local_path)

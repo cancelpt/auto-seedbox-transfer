@@ -68,7 +68,11 @@ def _parse_bencode_value_end(data: bytes, start: int) -> int:
     raise ValueError(f"invalid bencode token: {token}")
 
 
-def _detect_trailing_bencode_data(file_path: str, data: bytes, original_error: Exception) -> TorrentTrailingDataError | None:
+def _detect_trailing_bencode_data(
+    file_path: str,
+    data: bytes,
+    original_error: Exception,
+) -> TorrentTrailingDataError | None:
     try:
         valid_prefix_size = _parse_bencode_value_end(data, 0)
     except Exception:

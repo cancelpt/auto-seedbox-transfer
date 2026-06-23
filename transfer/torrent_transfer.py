@@ -12,6 +12,9 @@ ORIGIN_DATA_STATUS_MISSING_FILES = "missing_files"
 ORIGIN_DATA_STATUS_BLOCKED = "blocked"
 ORIGIN_DATA_STATUS_RECHECK_REQUESTED = "recheck_requested"
 ORIGIN_DATA_STATUS_WAITING_FOR_REDOWNLOAD = "waiting_for_redownload"
+ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_RECHECK_BUDGET_EXHAUSTED = "retryable_abandon_recheck_budget_exhausted"
+ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_RECOVERY_TIMEOUT = "retryable_abandon_recovery_timeout"
+ORIGIN_DATA_STATUS_RETRYABLE_ABANDON_PAUSED_DL = "retryable_abandon_pausedDL"
 
 
 class TorrentTransfer(BaseModel):
@@ -25,6 +28,8 @@ class TorrentTransfer(BaseModel):
     seedbox_bt_health: str = SEEDBOX_BT_HEALTH_UNKNOWN
     seedbox_origin_data_status: str = ORIGIN_DATA_STATUS_OK
     seedbox_origin_data_recheck_count: int = 0
+    seedbox_origin_recovery_started_at: float = 0.0
+    seedbox_origin_last_known_qb_state: str = ""
     download_retry_count: int = 0
     seedbox_add_retry_count: int = 0
     home_add_retry_count: int = 0
