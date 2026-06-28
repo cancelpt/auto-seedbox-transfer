@@ -50,6 +50,8 @@ def test_config_without_network_profiles_remains_compatible():
     assert config.transfer.data_plane_mode == "qb_bt"
     assert config.transfer.direct_piece_workers == 4
     assert config.transfer.direct_piece_resume_path is None
+    assert config.transfer.direct_piece_progress_log_interval_seconds == 30
+    assert config.transfer.direct_piece_stall_timeout_seconds == 180
     assert config.downloaders[0].network_profile is None
     assert config.seed_box[0].network_profile is None
 
@@ -67,12 +69,16 @@ def test_direct_piece_pull_mode_accepts_positive_worker_count_with_resume_path()
     config_data["transfer"]["data_plane_mode"] = "direct_piece_pull"
     config_data["transfer"]["direct_piece_workers"] = 8
     config_data["transfer"]["direct_piece_resume_path"] = "/tmp/direct-piece-resume"
+    config_data["transfer"]["direct_piece_progress_log_interval_seconds"] = 15
+    config_data["transfer"]["direct_piece_stall_timeout_seconds"] = 90
 
     config = Config(**config_data)
 
     assert config.transfer.data_plane_mode == "direct_piece_pull"
     assert config.transfer.direct_piece_workers == 8
     assert config.transfer.direct_piece_resume_path == "/tmp/direct-piece-resume"
+    assert config.transfer.direct_piece_progress_log_interval_seconds == 15
+    assert config.transfer.direct_piece_stall_timeout_seconds == 90
 
 
 def test_direct_piece_pull_mode_rejects_non_positive_worker_count():
@@ -82,6 +88,26 @@ def test_direct_piece_pull_mode_rejects_non_positive_worker_count():
     config_data["transfer"]["direct_piece_resume_path"] = "/tmp/direct-piece-resume"
 
     with pytest.raises(ValueError, match="direct_piece_workers"):
+        Config(**config_data)
+
+
+def test_direct_piece_pull_mode_rejects_non_positive_progress_interval():
+    config_data = make_config_dict()
+    config_data["transfer"]["data_plane_mode"] = "direct_piece_pull"
+    config_data["transfer"]["direct_piece_resume_path"] = "/tmp/direct-piece-resume"
+    config_data["transfer"]["direct_piece_progress_log_interval_seconds"] = 0
+
+    with pytest.raises(ValueError, match="direct_piece_progress_log_interval_seconds"):
+        Config(**config_data)
+
+
+def test_direct_piece_pull_mode_rejects_non_positive_stall_timeout():
+    config_data = make_config_dict()
+    config_data["transfer"]["data_plane_mode"] = "direct_piece_pull"
+    config_data["transfer"]["direct_piece_resume_path"] = "/tmp/direct-piece-resume"
+    config_data["transfer"]["direct_piece_stall_timeout_seconds"] = 0
+
+    with pytest.raises(ValueError, match="direct_piece_stall_timeout_seconds"):
         Config(**config_data)
 
 

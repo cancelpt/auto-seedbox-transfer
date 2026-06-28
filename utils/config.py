@@ -73,6 +73,8 @@ class Transfer(BaseModel):
     data_plane_mode: TransferDataPlaneMode = TransferDataPlaneMode.qb_bt
     direct_piece_workers: int = Field(default=4, gt=0)
     direct_piece_resume_path: Optional[str] = None
+    direct_piece_progress_log_interval_seconds: int = Field(default=30, gt=0)
+    direct_piece_stall_timeout_seconds: int = Field(default=180, gt=0)
     bt_trackers: List[str]
     seedbox_origin_data_missing_policy: SeedboxOriginDataMissingPolicy
     seedbox_origin_recovery_max_rechecks: int = 1
