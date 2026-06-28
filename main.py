@@ -22,6 +22,91 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+def _format_bytes_per_second(value):
+    if value is None:
+        return "unknown"
+    return f"{float(value):.2f} B/s"
+
+
+def _format_seconds(value):
+    if value is None:
+        return "unknown"
+    return f"{float(value):.2f}s"
+
+
+def _format_count_pair(current, total):
+    if current is None or total is None:
+        return "unknown"
+    return f"{int(current)}/{int(total)}"
+
+
+def _format_byte_pair(current, total):
+    if current is None or total is None:
+        return "unknown"
+    return f"{int(current)}/{int(total)}"
+
+
+def render_progress_watch_screen(report):
+    route = report.get("route", {})
+    summary = report.get("summary", {})
+    transfers = report.get("transfers", [])
+
+    lines = [
+        f"Route: {route.get('seed_box_name', '?')} -> {route.get('home_dl_name', '?')}",
+        (
+            "Summary: "
+            f"total={summary.get('total', 0)} "
+            f"running={summary.get('running', 0)} "
+            f"stalled={summary.get('stalled', 0)} "
+            f"completed={summary.get('completed_ready_not_imported', 0)} "
+            f"failed={summary.get('failed', 0)}"
+        ),
+        "",
+    ]
+
+    if not transfers:
+        lines.append("No active direct-piece transfers.")
+        return "\n".join(lines)
+
+    for transfer in transfers:
+        name = transfer.get("name") or transfer.get("info_hash") or "unknown"
+        lines.append(
+            (
+                f"{name} [{transfer.get('info_hash', '')}] "
+                f"state={transfer.get('state', 'unknown')} "
+                f"percent={transfer.get('percent', 'unknown')} "
+                f"pieces={_format_count_pair(transfer.get('completed_pieces'), transfer.get('piece_count'))} "
+                f"bytes={_format_byte_pair(transfer.get('completed_bytes'), transfer.get('total_bytes'))} "
+                f"speed={_format_bytes_per_second(transfer.get('bytes_per_second_recent'))} "
+                f"eta={_format_seconds(transfer.get('eta_seconds'))} "
+                f"idle={_format_seconds(transfer.get('seconds_since_last_progress'))} "
+                f"workers={transfer.get('workers', 'unknown')}"
+            )
+        )
+        lines.append(
+            f"  remote={transfer.get('remote_root', '')} local={transfer.get('local_root', '')}"
+        )
+        if transfer.get("last_error"):
+            lines.append(f"  error={transfer['last_error']}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def watch_progress_report(state_manager, audit_manager, watch_interval):
+    stdout = sys.stdout
+    is_tty = hasattr(stdout, "isatty") and stdout.isatty()
+    while True:
+        state_manager.load()
+        report = audit_manager.build_progress_report()
+        screen = render_progress_watch_screen(report)
+        if is_tty:
+            print("\x1b[H\x1b[J" + screen, end="", flush=True)
+        else:
+            print(screen, end="\n\n", flush=True)
+        time.sleep(watch_interval)
+
+
 def wait_for_next_run(interval, shutdown_event, trigger_event=None, poll_interval=0.5):
     """Wait until the next run, but wake up early when triggered."""
     if trigger_event is None:
@@ -156,6 +241,8 @@ def main(
     transmission_rpc_url="",
     transmission_username="",
     transmission_password="",
+    watch=False,
+    watch_interval=2.0,
 ):
     # Load configuration
     config: Config = YAMLConfigHandler.load(config_path)
@@ -214,6 +301,12 @@ def main(
             elif cleanup_plan:
                 result = audit_manager.build_cleanup_plan()
             elif progress:
+                if watch:
+                    try:
+                        watch_progress_report(state_manager, audit_manager, watch_interval)
+                    except KeyboardInterrupt:
+                        return
+                    return
                 result = audit_manager.build_progress_report()
             else:
                 result = audit_manager.build_report()
@@ -336,6 +429,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--audit", action="store_true", help="只读输出 AST/qB 对账报告，不执行同步")
     parser.add_argument("--progress", action="store_true", help="只读输出 direct-piece 进度报告，不执行同步")
+    parser.add_argument("--watch", action="store_true", help="配合 --progress 持续刷新人类可读进度界面")
+    parser.add_argument("--watch-interval", type=float, default=2.0, help="watch 模式刷新间隔，单位秒")
     parser.add_argument("--cleanup-plan", action="store_true", help="只读输出可清理残留计划，不删除任务")
     parser.add_argument("--apply-cleanup", action="store_true", help="执行 cleanup plan 中安全项，默认不删除文件")
     parser.add_argument("--transmission_rpc_url", type=str, default="", help="可选 Transmission RPC URL")
@@ -357,4 +452,6 @@ if __name__ == "__main__":
         transmission_rpc_url=args.transmission_rpc_url,
         transmission_username=args.transmission_username,
         transmission_password=args.transmission_password,
+        watch=args.watch,
+        watch_interval=args.watch_interval,
     )
