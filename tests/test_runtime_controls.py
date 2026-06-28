@@ -1,3 +1,4 @@
+import io
 import threading
 import time
 from types import SimpleNamespace
@@ -546,6 +547,302 @@ def test_main_progress_prints_report_without_starting_managers(monkeypatch, tmp_
     output = capsys.readouterr().out
     assert '"seed_box_name": "seedbox"' in output
     assert '"info_hash": "abc"' in output
+
+
+def test_render_progress_watch_screen_formats_human_readable_output():
+    report = {
+        "route": {"seed_box_name": "seedbox-a", "home_dl_name": "home-b"},
+        "summary": {
+            "total": 2,
+            "running": 1,
+            "stalled": 1,
+            "completed_ready_not_imported": 0,
+            "failed": 0,
+        },
+        "transfers": [
+            {
+                "name": "alpha",
+                "info_hash": "aaa111",
+                "state": "running",
+                "percent": 12.5,
+                "completed_pieces": 1,
+                "piece_count": 8,
+                "completed_bytes": 1024,
+                "total_bytes": 8192,
+                "bytes_per_second_recent": 256.0,
+                "eta_seconds": 28.5,
+                "seconds_since_last_progress": 3.0,
+                "workers": 2,
+                "remote_root": "/remote/alpha",
+                "local_root": "/local/alpha",
+                "last_error": "",
+            },
+            {
+                "name": "beta",
+                "info_hash": "bbb222",
+                "state": "stalled",
+                "percent": 50.0,
+                "completed_pieces": 4,
+                "piece_count": 8,
+                "completed_bytes": 4096,
+                "total_bytes": 8192,
+                "bytes_per_second_recent": 0.0,
+                "eta_seconds": None,
+                "seconds_since_last_progress": 185.0,
+                "workers": 4,
+                "remote_root": "/remote/beta",
+                "local_root": "/local/beta",
+                "last_error": "",
+            },
+        ],
+    }
+
+    screen = main_module.render_progress_watch_screen(report)
+
+    assert "Route: seedbox-a -> home-b" in screen
+    assert "Summary: total=2 running=1 stalled=1 completed=0 failed=0" in screen
+    assert "alpha" in screen
+    assert "state=running" in screen
+    assert "pieces=1/8" in screen
+    assert "speed=256.00 B/s" in screen
+    assert "eta=28.50s" in screen
+    assert "beta" in screen
+    assert "state=stalled" in screen
+    assert "idle=185.00s" in screen
+    assert "remote=/remote/beta" in screen
+    assert "local=/local/beta" in screen
+
+
+class FakeWatchStdout(io.StringIO):
+    def __init__(self, *, is_tty):
+        super().__init__()
+        self._is_tty = is_tty
+
+    def isatty(self):
+        return self._is_tty
+
+
+def test_main_progress_watch_redraws_in_place_and_refreshes_reports(monkeypatch, tmp_path):
+    config = SimpleNamespace(
+        transfer=SimpleNamespace(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+            direct_piece_resume_path=str(tmp_path / "resume"),
+        )
+    )
+    calls = []
+    reports = [
+        {
+            "route": {"seed_box_name": "seedbox", "home_dl_name": "home"},
+            "summary": {
+                "total": 1,
+                "running": 1,
+                "stalled": 0,
+                "completed_ready_not_imported": 0,
+                "failed": 0,
+            },
+            "transfers": [
+                {
+                    "name": "alpha",
+                    "info_hash": "abc",
+                    "state": "running",
+                    "percent": 25.0,
+                    "completed_pieces": 1,
+                    "piece_count": 4,
+                    "completed_bytes": 1024,
+                    "total_bytes": 4096,
+                    "bytes_per_second_recent": 512.0,
+                    "eta_seconds": 6.0,
+                    "seconds_since_last_progress": 1.0,
+                    "workers": 2,
+                    "remote_root": "/remote/a",
+                    "local_root": "/local/a",
+                    "last_error": "",
+                }
+            ],
+        },
+        {
+            "route": {"seed_box_name": "seedbox", "home_dl_name": "home"},
+            "summary": {
+                "total": 1,
+                "running": 0,
+                "stalled": 1,
+                "completed_ready_not_imported": 0,
+                "failed": 0,
+            },
+            "transfers": [
+                {
+                    "name": "alpha",
+                    "info_hash": "abc",
+                    "state": "stalled",
+                    "percent": 25.0,
+                    "completed_pieces": 1,
+                    "piece_count": 4,
+                    "completed_bytes": 1024,
+                    "total_bytes": 4096,
+                    "bytes_per_second_recent": 0.0,
+                    "eta_seconds": None,
+                    "seconds_since_last_progress": 95.0,
+                    "workers": 2,
+                    "remote_root": "/remote/a",
+                    "local_root": "/local/a",
+                    "last_error": "",
+                }
+            ],
+        },
+    ]
+
+    class DummyStateManager:
+        def __init__(self, _path):
+            self.load_count = 0
+            calls.append(self)
+
+        def load(self):
+            self.load_count += 1
+
+    class DummyAuditManager:
+        def __init__(self, *_args, **_kwargs):
+            self._index = 0
+
+        def build_progress_report(self):
+            if self._index >= len(reports):
+                raise KeyboardInterrupt
+            report = reports[self._index]
+            self._index += 1
+            return report
+
+    fake_stdout = FakeWatchStdout(is_tty=True)
+
+    monkeypatch.setattr(main_module.YAMLConfigHandler, "load", staticmethod(lambda _path: config))
+    monkeypatch.setattr(main_module, "ensure_directory_exists", lambda _path: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
+    monkeypatch.setattr(main_module, "StateManager", DummyStateManager)
+    monkeypatch.setattr(main_module, "create_downloader_clients", lambda *_args: ("seed-client", "home-client"))
+    monkeypatch.setattr(main_module, "fetch_transmission_torrents", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(main_module, "AuditManager", DummyAuditManager)
+    monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(main_module.sys, "stdout", fake_stdout)
+
+    main_module.main("config.yaml", "seedbox", "home", None, progress=True, watch=True, watch_interval=0.1)
+
+    output = fake_stdout.getvalue()
+    state_manager = calls[0]
+    assert state_manager.load_count == 3
+    assert output.count("\x1b[H\x1b[J") == 2
+    assert "Route: seedbox -> home" in output
+    assert "state=running" in output
+    assert "state=stalled" in output
+
+
+def test_main_progress_watch_non_tty_emits_separated_snapshots(monkeypatch, tmp_path):
+    config = SimpleNamespace(
+        transfer=SimpleNamespace(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+            direct_piece_resume_path=str(tmp_path / "resume"),
+        )
+    )
+    reports = [
+        {
+            "route": {"seed_box_name": "seedbox", "home_dl_name": "home"},
+            "summary": {
+                "total": 1,
+                "running": 1,
+                "stalled": 0,
+                "completed_ready_not_imported": 0,
+                "failed": 0,
+            },
+            "transfers": [
+                {
+                    "name": "alpha",
+                    "info_hash": "abc",
+                    "state": "running",
+                    "percent": 25.0,
+                    "completed_pieces": 1,
+                    "piece_count": 4,
+                    "completed_bytes": 1024,
+                    "total_bytes": 4096,
+                    "bytes_per_second_recent": 512.0,
+                    "eta_seconds": 6.0,
+                    "seconds_since_last_progress": 1.0,
+                    "workers": 2,
+                    "remote_root": "/remote/a",
+                    "local_root": "/local/a",
+                    "last_error": "",
+                }
+            ],
+        },
+        {
+            "route": {"seed_box_name": "seedbox", "home_dl_name": "home"},
+            "summary": {
+                "total": 1,
+                "running": 0,
+                "stalled": 1,
+                "completed_ready_not_imported": 0,
+                "failed": 0,
+            },
+            "transfers": [
+                {
+                    "name": "alpha",
+                    "info_hash": "abc",
+                    "state": "stalled",
+                    "percent": 25.0,
+                    "completed_pieces": 1,
+                    "piece_count": 4,
+                    "completed_bytes": 1024,
+                    "total_bytes": 4096,
+                    "bytes_per_second_recent": 0.0,
+                    "eta_seconds": None,
+                    "seconds_since_last_progress": 95.0,
+                    "workers": 2,
+                    "remote_root": "/remote/a",
+                    "local_root": "/local/a",
+                    "last_error": "",
+                }
+            ],
+        },
+    ]
+
+    class DummyStateManager:
+        def __init__(self, _path):
+            pass
+
+        def load(self):
+            return None
+
+    class DummyAuditManager:
+        def __init__(self, *_args, **_kwargs):
+            self._index = 0
+
+        def build_progress_report(self):
+            if self._index >= len(reports):
+                raise KeyboardInterrupt
+            report = reports[self._index]
+            self._index += 1
+            return report
+
+    fake_stdout = FakeWatchStdout(is_tty=False)
+
+    monkeypatch.setattr(main_module.YAMLConfigHandler, "load", staticmethod(lambda _path: config))
+    monkeypatch.setattr(main_module, "ensure_directory_exists", lambda _path: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
+    monkeypatch.setattr(main_module, "StateManager", DummyStateManager)
+    monkeypatch.setattr(main_module, "create_downloader_clients", lambda *_args: ("seed-client", "home-client"))
+    monkeypatch.setattr(main_module, "fetch_transmission_torrents", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(main_module, "AuditManager", DummyAuditManager)
+    monkeypatch.setattr(main_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(main_module.sys, "stdout", fake_stdout)
+
+    main_module.main("config.yaml", "seedbox", "home", None, progress=True, watch=True, watch_interval=0.1)
+
+    output = fake_stdout.getvalue()
+    assert "\x1b[H\x1b[J" not in output
+    assert output.count("Route: seedbox -> home") == 2
+    assert "\n\nRoute: seedbox -> home" in output
+    assert "state=running" in output
+    assert "state=stalled" in output
 
 
 def test_main_apply_cleanup_prints_deleted_plan(monkeypatch, tmp_path, capsys):
