@@ -64,6 +64,7 @@ class AuditManager:
         home_torrents = self._list_torrents(self.home_client)
         route_tag = f"ast:route:{self.seed_box_name}->{self.home_dl_name}"
         home_by_hash = {getattr(torrent, "hash", ""): torrent for torrent in home_torrents}
+        current_time = time.time()
 
         transfers = []
         for info_hash, state in state_by_origin.items():
@@ -78,7 +79,7 @@ class AuditManager:
             if snapshot is None:
                 continue
 
-            normalized = self._normalize_progress_snapshot(snapshot, info_hash, state)
+            normalized = self._normalize_progress_snapshot(snapshot, info_hash, state, current_time=current_time)
             if normalized is None:
                 continue
             transfers.append(normalized)
@@ -377,7 +378,14 @@ class AuditManager:
             "last_error": "",
         }
 
-    def _normalize_progress_snapshot(self, snapshot: Dict[str, Any], info_hash: str, state) -> Optional[Dict[str, Any]]:
+    def _normalize_progress_snapshot(
+        self,
+        snapshot: Dict[str, Any],
+        info_hash: str,
+        state,
+        *,
+        current_time: float,
+    ) -> Optional[Dict[str, Any]]:
         normalized = {
             "info_hash": snapshot.get("info_hash") or info_hash,
             "name": snapshot.get("name") or Path(state.origin_torrent_file_path).stem or info_hash,
@@ -400,6 +408,22 @@ class AuditManager:
             "remote_root": snapshot.get("remote_root") or "",
             "last_error": snapshot.get("last_error") or state.last_error or "",
         }
+
+        last_progress_at = normalized["last_piece_completed_at"]
+        if last_progress_at is None:
+            last_progress_at = normalized["updated_at"]
+        if last_progress_at is None:
+            last_progress_at = normalized["started_at"]
+
+        if last_progress_at is not None:
+            normalized["seconds_since_last_progress"] = round(max(current_time - last_progress_at, 0.0), 2)
+            stall_timeout = getattr(self.config.transfer, "direct_piece_stall_timeout_seconds", None)
+            if (
+                normalized["state"] == "running"
+                and stall_timeout
+                and normalized["seconds_since_last_progress"] >= float(stall_timeout)
+            ):
+                normalized["state"] = "stalled"
 
         if normalized["state"] == "completed" and state.is_torrent_in_home_dl:
             return None

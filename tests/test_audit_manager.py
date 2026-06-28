@@ -325,7 +325,7 @@ def test_apply_cleanup_deletes_only_safe_home_qb_tasks_without_files(tmp_path):
     assert [torrent.hash for torrent in home_client.torrents_info()] == ["manual-review"]
 
 
-def test_build_progress_report_reads_status_sidecars_and_summarizes_states(tmp_path):
+def test_build_progress_report_reads_status_sidecars_and_summarizes_states(monkeypatch, tmp_path):
     config = make_config(tmp_path, direct_mode=True)
     state_manager = StateManager(config.transfer.torrent_info_path)
     resume_dir = tmp_path / "resume"
@@ -378,6 +378,7 @@ def test_build_progress_report_reads_status_sidecars_and_summarizes_states(tmp_p
         last_error="network timeout",
     )
     write_progress_status(resume_dir, "imported-hash", state="completed", percent=100.0)
+    monkeypatch.setattr(audit_manager_module.time, "time", lambda: 25.0)
 
     report = AuditManager(config, state_manager, "seedbox_a", "home_a", FakeClient([]), FakeClient([])).build_progress_report()
 
@@ -515,3 +516,74 @@ def test_build_progress_report_reconstructs_from_manifest_and_pieces_when_status
             "last_error": "",
         }
     ]
+
+
+def test_build_progress_report_recomputes_freshness_from_status_sidecar(monkeypatch, tmp_path):
+    config = make_config(tmp_path, direct_mode=True)
+    config.transfer.direct_piece_stall_timeout_seconds = 30
+    state_manager = StateManager(config.transfer.torrent_info_path)
+    resume_dir = tmp_path / "resume"
+
+    state_manager.update(
+        TorrentTransfer(
+            hash="freshness-hash",
+            origin_torrent_file_path=str(tmp_path / "freshness.torrent"),
+        )
+    )
+    write_progress_status(
+        resume_dir,
+        "freshness-hash",
+        state="running",
+        updated_at=20.0,
+        last_piece_completed_at=18.0,
+        seconds_since_last_progress=2.0,
+    )
+    monkeypatch.setattr(audit_manager_module.time, "time", lambda: 25.0)
+
+    report = AuditManager(config, state_manager, "seedbox_a", "home_a", FakeClient([]), FakeClient([])).build_progress_report()
+
+    assert report["summary"] == {
+        "total": 1,
+        "running": 1,
+        "stalled": 0,
+        "completed_ready_not_imported": 0,
+        "failed": 0,
+    }
+    assert report["transfers"][0]["state"] == "running"
+    assert report["transfers"][0]["updated_at"] == 20.0
+    assert report["transfers"][0]["seconds_since_last_progress"] == 7.0
+
+
+def test_build_progress_report_reclassifies_stale_running_status_sidecar_as_stalled(monkeypatch, tmp_path):
+    config = make_config(tmp_path, direct_mode=True)
+    config.transfer.direct_piece_stall_timeout_seconds = 10
+    state_manager = StateManager(config.transfer.torrent_info_path)
+    resume_dir = tmp_path / "resume"
+
+    state_manager.update(
+        TorrentTransfer(
+            hash="stale-running-hash",
+            origin_torrent_file_path=str(tmp_path / "stale-running.torrent"),
+        )
+    )
+    write_progress_status(
+        resume_dir,
+        "stale-running-hash",
+        state="running",
+        updated_at=20.0,
+        last_piece_completed_at=18.0,
+        seconds_since_last_progress=2.0,
+    )
+    monkeypatch.setattr(audit_manager_module.time, "time", lambda: 31.0)
+
+    report = AuditManager(config, state_manager, "seedbox_a", "home_a", FakeClient([]), FakeClient([])).build_progress_report()
+
+    assert report["summary"] == {
+        "total": 1,
+        "running": 0,
+        "stalled": 1,
+        "completed_ready_not_imported": 0,
+        "failed": 0,
+    }
+    assert report["transfers"][0]["state"] == "stalled"
+    assert report["transfers"][0]["seconds_since_last_progress"] == 13.0
