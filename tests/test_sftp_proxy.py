@@ -28,13 +28,19 @@ class FakeTransport:
 
 class FakeParamikoSFTPClient:
     instances = []
+    remote_files = {}
 
     @staticmethod
     def from_transport(transport):
         client = FakeParamikoSFTPClient()
         client.transport = transport
+        client.open_calls = []
         FakeParamikoSFTPClient.instances.append(client)
         return client
+
+    def open(self, remote_path, mode="rb"):
+        self.open_calls.append((remote_path, mode))
+        return FakeRemoteFile(self.remote_files[remote_path])
 
     def close(self):
         return None
@@ -73,12 +79,37 @@ class FakeHttpConnectSocket:
         self.closed = True
 
 
+class FakeRemoteFile:
+    def __init__(self, payload):
+        self.payload = payload
+        self.offset = 0
+
+    def seek(self, offset):
+        self.offset = offset
+
+    def read(self, length):
+        chunk = self.payload[self.offset : self.offset + length]
+        self.offset += len(chunk)
+        return chunk
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+
 @pytest.fixture(autouse=True)
 def patch_paramiko(monkeypatch):
     monkeypatch.setattr("utils.sftp_utils.paramiko.Transport", FakeTransport)
     monkeypatch.setattr("utils.sftp_utils.paramiko.SFTPClient", FakeParamikoSFTPClient)
     FakeTransport.instances = []
     FakeParamikoSFTPClient.instances = []
+    FakeParamikoSFTPClient.remote_files = {}
     FakeSocksSocket.instances = []
     yield
 
@@ -266,3 +297,18 @@ def test_sftp_http_connect_proxy_rejects_non_200_response(monkeypatch):
         client.connect()
 
     assert http_socket.closed is True
+
+
+def test_sftp_read_range_supports_random_access_reads():
+    FakeParamikoSFTPClient.remote_files = {
+        "/remote/data.bin": b"0123456789",
+    }
+    client = SFTPClient(hostname="seed.example", port=22, username="user", password="pass")
+    client.connect()
+
+    payload = client.read_range("/remote/data.bin", offset=3, length=4)
+
+    assert payload == b"3456"
+    assert FakeParamikoSFTPClient.instances[0].open_calls == [
+        ("/remote/data.bin", "rb"),
+    ]
