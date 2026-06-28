@@ -150,6 +150,7 @@ def main(
     target_download_dir,
     run_once=False,
     audit=False,
+    progress=False,
     cleanup_plan=False,
     apply_cleanup=False,
     transmission_rpc_url="",
@@ -191,7 +192,7 @@ def main(
             return
 
     try:
-        if audit or cleanup_plan or apply_cleanup:
+        if audit or progress or cleanup_plan or apply_cleanup:
             state_manager = StateManager(config.transfer.torrent_info_path)
             seedbox_client, home_client = create_downloader_clients(config, seed_box_name, home_dl_name)
             tr_torrents = fetch_transmission_torrents(
@@ -212,6 +213,8 @@ def main(
                 result = audit_manager.apply_cleanup()
             elif cleanup_plan:
                 result = audit_manager.build_cleanup_plan()
+            elif progress:
+                result = audit_manager.build_progress_report()
             else:
                 result = audit_manager.build_report()
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -332,6 +335,7 @@ if __name__ == "__main__":
         help="单次执行并退出，同时通过状态文件锁避免定时任务并发重复运行",
     )
     parser.add_argument("--audit", action="store_true", help="只读输出 AST/qB 对账报告，不执行同步")
+    parser.add_argument("--progress", action="store_true", help="只读输出 direct-piece 进度报告，不执行同步")
     parser.add_argument("--cleanup-plan", action="store_true", help="只读输出可清理残留计划，不删除任务")
     parser.add_argument("--apply-cleanup", action="store_true", help="执行 cleanup plan 中安全项，默认不删除文件")
     parser.add_argument("--transmission_rpc_url", type=str, default="", help="可选 Transmission RPC URL")
@@ -347,6 +351,7 @@ if __name__ == "__main__":
         args.target_download_dir,
         args.run_once,
         audit=args.audit,
+        progress=args.progress,
         cleanup_plan=args.cleanup_plan,
         apply_cleanup=args.apply_cleanup,
         transmission_rpc_url=args.transmission_rpc_url,

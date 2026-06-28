@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from managers.state_manager import StateManager
@@ -55,6 +57,49 @@ class AuditManager:
                 managed_hashes=state_origin_hashes | state_bt_hashes,
                 managed_categories=self._home_managed_categories(),
             ),
+        }
+
+    def build_progress_report(self) -> Dict[str, Any]:
+        state_by_origin = self.state_manager.get_all()
+        home_torrents = self._list_torrents(self.home_client)
+        route_tag = f"ast:route:{self.seed_box_name}->{self.home_dl_name}"
+        home_by_hash = {getattr(torrent, "hash", ""): torrent for torrent in home_torrents}
+
+        transfers = []
+        for info_hash, state in state_by_origin.items():
+            if state.is_torrent_in_home_dl:
+                continue
+
+            snapshot = self._load_progress_snapshot(info_hash)
+            if snapshot is None and not self._state_needs_progress_reporting(state, home_by_hash, route_tag):
+                continue
+
+            snapshot = snapshot or self._build_state_only_progress_snapshot(info_hash, state)
+            if snapshot is None:
+                continue
+
+            normalized = self._normalize_progress_snapshot(snapshot, info_hash, state)
+            if normalized is None:
+                continue
+            transfers.append(normalized)
+
+        transfers.sort(key=lambda item: (self._progress_state_rank(item["state"]), item["name"], item["info_hash"]))
+
+        summary = {
+            "total": len(transfers),
+            "running": sum(1 for item in transfers if item["state"] == "running"),
+            "stalled": sum(1 for item in transfers if item["state"] == "stalled"),
+            "completed_ready_not_imported": sum(1 for item in transfers if item["state"] == "completed"),
+            "failed": sum(1 for item in transfers if item["state"] == "failed"),
+        }
+
+        return {
+            "route": {
+                "seed_box_name": self.seed_box_name,
+                "home_dl_name": self.home_dl_name,
+            },
+            "transfers": transfers,
+            "summary": summary,
         }
 
     def build_cleanup_plan(self) -> Dict[str, Any]:
@@ -211,6 +256,204 @@ class AuditManager:
             "save_path": getattr(torrent, "save_path", ""),
             "tags": getattr(torrent, "tags", ""),
         }
+
+    def _state_needs_progress_reporting(self, state, home_by_hash: Dict[str, Any], route_tag: str) -> bool:
+        if state.is_direct_payload_ready or state.last_error:
+            return True
+        home_torrent = home_by_hash.get(state.hash)
+        if home_torrent is None:
+            return False
+        tags = getattr(home_torrent, "tags", "") or ""
+        return route_tag in {tag.strip() for tag in tags.split(",") if tag.strip()}
+
+    def _load_progress_snapshot(self, info_hash: str) -> Optional[Dict[str, Any]]:
+        resume_dir = getattr(self.config.transfer, "direct_piece_resume_path", None)
+        if not resume_dir:
+            return None
+        resume_path = Path(resume_dir)
+        status_path = resume_path / f"{info_hash}.status.json"
+        if status_path.exists():
+            return self._read_json_file(status_path)
+        manifest_path = resume_path / f"{info_hash}.manifest.json"
+        pieces_path = resume_path / f"{info_hash}.pieces"
+        if not manifest_path.exists() or not pieces_path.exists():
+            return None
+        manifest = self._read_json_file(manifest_path)
+        if manifest is None:
+            return None
+        return self._reconstruct_progress_from_resume_artifacts(info_hash, manifest, pieces_path)
+
+    def _build_state_only_progress_snapshot(self, info_hash: str, state) -> Optional[Dict[str, Any]]:
+        if state.is_direct_payload_ready:
+            return {
+                "info_hash": info_hash,
+                "name": Path(state.origin_torrent_file_path).stem or info_hash,
+                "state": "completed",
+                "piece_count": None,
+                "completed_pieces": None,
+                "remaining_pieces": None,
+                "total_bytes": None,
+                "completed_bytes": None,
+                "percent": 100.0,
+                "workers": None,
+                "started_at": None,
+                "updated_at": None,
+                "last_piece_completed_at": None,
+                "seconds_since_last_progress": None,
+                "bytes_per_second_recent": None,
+                "bytes_per_second_average": None,
+                "eta_seconds": None,
+                "local_root": state.direct_payload_root or "",
+                "remote_root": "",
+                "last_error": state.last_error or "",
+            }
+        if state.last_error:
+            return {
+                "info_hash": info_hash,
+                "name": Path(state.origin_torrent_file_path).stem or info_hash,
+                "state": "failed",
+                "piece_count": None,
+                "completed_pieces": None,
+                "remaining_pieces": None,
+                "total_bytes": None,
+                "completed_bytes": None,
+                "percent": None,
+                "workers": None,
+                "started_at": None,
+                "updated_at": None,
+                "last_piece_completed_at": None,
+                "seconds_since_last_progress": None,
+                "bytes_per_second_recent": None,
+                "bytes_per_second_average": None,
+                "eta_seconds": None,
+                "local_root": state.direct_payload_root or "",
+                "remote_root": "",
+                "last_error": state.last_error,
+            }
+        return None
+
+    def _reconstruct_progress_from_resume_artifacts(
+        self,
+        info_hash: str,
+        manifest: Dict[str, Any],
+        pieces_path: Path,
+    ) -> Dict[str, Any]:
+        piece_states = pieces_path.read_bytes()
+        piece_count = int(manifest.get("piece_count") or len(piece_states))
+        completed_pieces = sum(1 for value in piece_states[:piece_count] if value == 1)
+        total_bytes = int(manifest.get("total_size") or 0)
+        completed_bytes = self._completed_bytes_from_piece_states(
+            piece_states=piece_states[:piece_count],
+            piece_length=int(manifest.get("piece_length") or 0),
+            total_bytes=total_bytes,
+        )
+        percent = self._compute_percent(completed_bytes, total_bytes)
+        updated_at = pieces_path.stat().st_mtime
+        started_at = manifest.get("created_at")
+        seconds_since_last_progress = max(0.0, time.time() - updated_at)
+
+        return {
+            "info_hash": info_hash,
+            "name": manifest.get("torrent_name") or info_hash,
+            "state": "running",
+            "piece_count": piece_count,
+            "completed_pieces": completed_pieces,
+            "remaining_pieces": max(piece_count - completed_pieces, 0),
+            "total_bytes": total_bytes,
+            "completed_bytes": completed_bytes,
+            "percent": percent,
+            "workers": None,
+            "started_at": started_at,
+            "updated_at": updated_at,
+            "last_piece_completed_at": updated_at,
+            "seconds_since_last_progress": seconds_since_last_progress,
+            "bytes_per_second_recent": None,
+            "bytes_per_second_average": None,
+            "eta_seconds": None,
+            "local_root": manifest.get("local_root", ""),
+            "remote_root": manifest.get("remote_root", ""),
+            "last_error": "",
+        }
+
+    def _normalize_progress_snapshot(self, snapshot: Dict[str, Any], info_hash: str, state) -> Optional[Dict[str, Any]]:
+        normalized = {
+            "info_hash": snapshot.get("info_hash") or info_hash,
+            "name": snapshot.get("name") or Path(state.origin_torrent_file_path).stem or info_hash,
+            "state": snapshot.get("state") or ("failed" if state.last_error else "running"),
+            "piece_count": self._int_or_none(snapshot.get("piece_count")),
+            "completed_pieces": self._int_or_none(snapshot.get("completed_pieces")),
+            "remaining_pieces": self._int_or_none(snapshot.get("remaining_pieces")),
+            "total_bytes": self._int_or_none(snapshot.get("total_bytes")),
+            "completed_bytes": self._int_or_none(snapshot.get("completed_bytes")),
+            "percent": self._float_or_none(snapshot.get("percent")),
+            "workers": self._int_or_none(snapshot.get("workers")),
+            "started_at": self._float_or_none(snapshot.get("started_at")),
+            "updated_at": self._float_or_none(snapshot.get("updated_at")),
+            "last_piece_completed_at": self._float_or_none(snapshot.get("last_piece_completed_at")),
+            "seconds_since_last_progress": self._float_or_none(snapshot.get("seconds_since_last_progress")),
+            "bytes_per_second_recent": self._float_or_none(snapshot.get("bytes_per_second_recent")),
+            "bytes_per_second_average": self._float_or_none(snapshot.get("bytes_per_second_average")),
+            "eta_seconds": self._float_or_none(snapshot.get("eta_seconds")),
+            "local_root": snapshot.get("local_root") or state.direct_payload_root or "",
+            "remote_root": snapshot.get("remote_root") or "",
+            "last_error": snapshot.get("last_error") or state.last_error or "",
+        }
+
+        if normalized["state"] == "completed" and state.is_torrent_in_home_dl:
+            return None
+        return normalized
+
+    @staticmethod
+    def _completed_bytes_from_piece_states(piece_states: bytes, piece_length: int, total_bytes: int) -> int:
+        if total_bytes <= 0 or piece_length <= 0 or not piece_states:
+            return 0
+        completed_bytes = 0
+        piece_count = len(piece_states)
+        last_piece_length = total_bytes % piece_length or piece_length
+        for piece_index, status in enumerate(piece_states):
+            if status != 1:
+                continue
+            if piece_index == piece_count - 1:
+                completed_bytes += last_piece_length
+            else:
+                completed_bytes += piece_length
+        return min(total_bytes, completed_bytes)
+
+    @staticmethod
+    def _compute_percent(completed_bytes: int, total_bytes: int) -> Optional[float]:
+        if total_bytes <= 0:
+            return None
+        return round((completed_bytes / total_bytes) * 100, 2)
+
+    @staticmethod
+    def _int_or_none(value):
+        if value is None or value == "":
+            return None
+        return int(value)
+
+    @staticmethod
+    def _float_or_none(value):
+        if value is None or value == "":
+            return None
+        return float(value)
+
+    @staticmethod
+    def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _progress_state_rank(state: str) -> int:
+        order = {
+            "failed": 0,
+            "completed": 1,
+            "running": 2,
+            "stalled": 3,
+        }
+        return order.get(state, 99)
 
 
 def fetch_transmission_torrents(url: str, username: str = "", password: str = "") -> List[Dict[str, Any]]:
