@@ -137,6 +137,66 @@ def test_main_run_once_short_circuits_when_lock_not_acquired(monkeypatch, tmp_pa
     assert order == []
 
 
+def test_main_direct_mode_uses_direct_transfer_manager_in_run_once(monkeypatch, tmp_path):
+    calls = []
+
+    config = SimpleNamespace(
+        transfer=SimpleNamespace(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+            direct_piece_resume_path=str(tmp_path / "resume"),
+            data_plane_mode="direct_piece_pull",
+            local_interval=1,
+            seedbox_interval=1,
+            home_interval=1,
+        )
+    )
+
+    class DummyStateManager:
+        def __init__(self, _path):
+            pass
+
+    class DummyManager:
+        def run(self):
+            return None
+
+    monkeypatch.setattr(main_module.YAMLConfigHandler, "load", staticmethod(lambda _path: config))
+    monkeypatch.setattr(main_module, "ensure_directory_exists", lambda _path: None)
+    monkeypatch.setattr(main_module, "try_acquire_lock", lambda _path: object())
+    monkeypatch.setattr(main_module, "release_lock", lambda _handle: None)
+    monkeypatch.setattr(main_module, "StateManager", DummyStateManager)
+    monkeypatch.setattr(main_module, "LocalManager", lambda *_args, **_kwargs: calls.append("local") or DummyManager())
+    monkeypatch.setattr(
+        main_module,
+        "DirectTransferManager",
+        lambda *_args, **_kwargs: calls.append("direct") or DummyManager(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "SeedBoxManager",
+        lambda *_args, **_kwargs: calls.append("seedbox") or DummyManager(),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "HomeManager",
+        lambda *_args, **_kwargs: calls.append("home") or DummyManager(),
+    )
+    monkeypatch.setattr(main_module, "run_once_cycle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
+
+    main_module.main(
+        "config.yaml",
+        "seedbox",
+        "home",
+        "/downloads",
+        run_once=True,
+    )
+
+    assert calls == ["direct", "seedbox", "home"]
+
+
 def test_main_audit_prints_report_without_starting_managers(monkeypatch, tmp_path, capsys):
     config = SimpleNamespace(
         transfer=SimpleNamespace(

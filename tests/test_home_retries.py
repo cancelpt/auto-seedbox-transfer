@@ -11,6 +11,7 @@ from utils.config import Config, Downloader, SeedBox, Transfer
 class FakeHomeClient:
     def __init__(self):
         self.add_calls = []
+        self.peer_calls = []
         self.delete_calls = []
         self.delete_tags_calls = []
         self.recheck_calls = []
@@ -49,6 +50,7 @@ class FakeHomeClient:
         return None
 
     def torrents_add_peers(self, **kwargs):
+        self.peer_calls.append(kwargs)
         return None
 
     def torrents_recheck(self, **kwargs):
@@ -91,6 +93,45 @@ def make_config(tmp_path):
             bt_path=str(tmp_path / "bt"),
             torrent_info_path=str(tmp_path / "state.json"),
             bt_trackers=[],
+            seedbox_origin_data_missing_policy="pause_transfer",
+        ),
+        seed_box=[
+            SeedBox(
+                name="seedbox",
+                ssh_host="seed.example",
+                incoming_port=60000,
+                ssh_user="user",
+                ssh_password="pass",
+                torrents_path="/remote/torrents",
+            )
+        ],
+        downloaders=[
+            Downloader(
+                name="seedbox",
+                url="http://seedbox:8080",
+                username="user",
+                password="pass",
+                want_torrent_category="To",
+            ),
+            Downloader(
+                name="home",
+                url="http://home:8080",
+                username="user",
+                password="pass",
+            ),
+        ],
+    )
+
+
+def make_direct_config(tmp_path):
+    return Config(
+        transfer=Transfer(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+            bt_trackers=[],
+            data_plane_mode="direct_piece_pull",
+            direct_piece_resume_path=str(tmp_path / "resume"),
             seedbox_origin_data_missing_policy="pause_transfer",
         ),
         seed_box=[
@@ -337,6 +378,121 @@ def test_home_starts_paused_existing_bt(tmp_path, monkeypatch):
     manager.run()
 
     assert client.start_calls == [{"torrent_hashes": "bt-hash"}]
+
+
+def test_home_direct_mode_waits_for_payload_ready_without_bt_peer_injection(tmp_path, monkeypatch):
+    config = make_direct_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    origin_path = Path(tmp_path / "origin.torrent")
+    origin_path.write_text("origin", encoding="utf-8")
+    bt_path = Path(tmp_path / "bt.torrent")
+    bt_path.write_text("bt", encoding="utf-8")
+
+    StateManager(config.transfer.torrent_info_path).update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(origin_path),
+            bt_torrent_file_path=str(bt_path),
+            is_bt_in_seed_box=True,
+            direct_payload_root="/downloads/home",
+            is_direct_payload_ready=False,
+        )
+    )
+
+    client = FakeHomeClient()
+
+    def torrents_info(torrent_hashes=None):
+        bt = SimpleNamespace(hash="bt-hash", progress=0.4, state="downloading")
+        if torrent_hashes is None:
+            return [bt]
+        if torrent_hashes == "bt-hash":
+            return [bt]
+        return []
+
+    client.torrents_info = torrents_info
+    monkeypatch.setattr(
+        home_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = HomeManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        "/downloads/home",
+    )
+    manager.run()
+
+    final_state = StateManager(config.transfer.torrent_info_path).get("origin-hash")
+
+    assert client.add_calls == []
+    assert client.peer_calls == []
+    assert final_state.is_torrent_in_home_dl is False
+
+
+def test_home_direct_mode_imports_origin_from_payload_root_without_bt_peer_injection(tmp_path, monkeypatch):
+    config = make_direct_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    origin_path = Path(tmp_path / "origin.torrent")
+    origin_path.write_text("origin", encoding="utf-8")
+    bt_path = Path(tmp_path / "bt.torrent")
+    bt_path.write_text("bt", encoding="utf-8")
+
+    StateManager(config.transfer.torrent_info_path).update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(origin_path),
+            bt_torrent_file_path=str(bt_path),
+            is_bt_in_seed_box=True,
+            direct_payload_root="/downloads/home",
+            is_direct_payload_ready=True,
+        )
+    )
+
+    client = FakeHomeClient()
+    client.torrents_add = lambda **kwargs: client.add_calls.append(kwargs) or "Ok."
+
+    def torrents_info(torrent_hashes=None):
+        bt = SimpleNamespace(hash="bt-hash", progress=0.4, state="downloading")
+        if torrent_hashes is None:
+            return [bt]
+        if torrent_hashes == "bt-hash":
+            return [bt]
+        return []
+
+    client.torrents_info = torrents_info
+    monkeypatch.setattr(
+        home_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = HomeManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        "/downloads/home",
+    )
+    manager.run()
+
+    assert client.add_calls == [
+        {
+            "torrent_files": str(origin_path),
+            "save_path": "/downloads/home",
+            "category": config.transfer.home_origin_temp_category,
+            "is_skip_checking": True,
+            "is_paused": config.transfer.pause_after_add_origin,
+            "tags": "ast,ast:origin:origin-hash,ast:route:seedbox->home",
+        }
+    ]
+    assert client.peer_calls == []
 
 
 def test_home_adds_origin_to_existing_bt_save_path_when_target_dir_is_missing(tmp_path, monkeypatch):

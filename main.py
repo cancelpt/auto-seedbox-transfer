@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from managers.audit_manager import AuditManager, fetch_transmission_torrents
+from managers.direct_transfer_manager import DirectTransferManager
 from managers.home_manager import HomeManager
 from managers.local_manager import LocalManager
 from managers.seedbox_manager import SeedBoxManager
@@ -97,17 +98,28 @@ def release_lock(lock_file):
 
 def run_once_cycle(local_manager, seedbox_manager, home_manager, shutdown_event=None):
     """Run a bounded single-process workflow suitable for cron."""
-    cycle = [
-        local_manager,
-        seedbox_manager,
-        local_manager,
-        seedbox_manager,
-        home_manager,
-        seedbox_manager,
-    ]
+    if local_manager is None:
+        cycle = [
+            seedbox_manager,
+            local_manager,
+            seedbox_manager,
+            home_manager,
+            seedbox_manager,
+        ]
+    else:
+        cycle = [
+            local_manager,
+            seedbox_manager,
+            local_manager,
+            seedbox_manager,
+            home_manager,
+            seedbox_manager,
+        ]
     for manager in cycle:
         if shutdown_event and shutdown_event.is_set():
             break
+        if manager is None:
+            continue
         manager.run()
 
 
@@ -144,6 +156,8 @@ def main(
     # Validate and create directories
     ensure_directory_exists(config.transfer.original_torrent_path)
     ensure_directory_exists(config.transfer.bt_path)
+    if getattr(config.transfer, "direct_piece_resume_path", None):
+        ensure_directory_exists(config.transfer.direct_piece_resume_path)
 
     # Ensure torrent info path directory exists
     torrent_info_path = Path(config.transfer.torrent_info_path)
@@ -207,12 +221,24 @@ def main(
         trigger_home = threading.Event()
 
         # Initialize Business Logic Managers
-        local_manager = LocalManager(
-            config,
-            state_manager,
-            trigger_seedbox=trigger_seedbox,
-            trigger_home=trigger_home,
-        )
+        data_plane_mode = getattr(config.transfer, "data_plane_mode", "qb_bt")
+        use_direct_mode = getattr(data_plane_mode, "value", data_plane_mode) == "direct_piece_pull"
+        if use_direct_mode:
+            local_manager = DirectTransferManager(
+                config,
+                state_manager,
+                seed_box_name,
+                target_download_dir,
+                shutdown_event,
+                trigger_home=trigger_home,
+            )
+        else:
+            local_manager = LocalManager(
+                config,
+                state_manager,
+                trigger_seedbox=trigger_seedbox,
+                trigger_home=trigger_home,
+            )
         seedbox_manager = SeedBoxManager(
             config,
             state_manager,
@@ -247,7 +273,7 @@ def main(
             executor.submit(
                 run_manager_loop,
                 local_manager,
-                "LocalManager",
+                "DirectTransferManager" if use_direct_mode else "LocalManager",
                 config.transfer.local_interval,
                 shutdown_event,
                 trigger_local,
