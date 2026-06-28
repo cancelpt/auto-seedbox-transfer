@@ -16,6 +16,7 @@ class FakeSeedboxClient:
         self.add_response = add_response
         self.add_calls = []
         self.delete_calls = []
+        self.set_category_calls = []
         self.delete_tag_calls = []
         self.recheck_calls = []
         self.resume_calls = []
@@ -39,6 +40,7 @@ class FakeSeedboxClient:
         return None
 
     def torrents_set_category(self, **kwargs):
+        self.set_category_calls.append(kwargs)
         return None
 
     def torrents_recheck(self, **kwargs):
@@ -107,6 +109,47 @@ def make_config(tmp_path, auto_dl_torrent_from_seedbox=False):
             bt_trackers=[],
             auto_dl_torrent_from_seedbox=auto_dl_torrent_from_seedbox,
             seedbox_origin_data_missing_policy="pause_transfer",
+        ),
+        seed_box=[
+            SeedBox(
+                name="seedbox",
+                ssh_host="seed.example",
+                incoming_port=60000,
+                ssh_user="user",
+                ssh_password="pass",
+                torrents_path="/remote/torrents",
+            )
+        ],
+        downloaders=[
+            Downloader(
+                name="seedbox",
+                url="http://seedbox:8080",
+                username="user",
+                password="pass",
+                want_torrent_category="To",
+            ),
+            Downloader(
+                name="home",
+                url="http://home:8080",
+                username="user",
+                password="pass",
+            ),
+        ],
+    )
+
+
+def make_direct_config(tmp_path, seed_box_keep_torrent=False, keep_category=""):
+    return Config(
+        transfer=Transfer(
+            original_torrent_path=str(tmp_path / "downloads"),
+            bt_path=str(tmp_path / "bt"),
+            torrent_info_path=str(tmp_path / "state.json"),
+            bt_trackers=[],
+            data_plane_mode="direct_piece_pull",
+            direct_piece_resume_path=str(tmp_path / "resume"),
+            seedbox_origin_data_missing_policy="pause_transfer",
+            seed_box_keep_torrent=seed_box_keep_torrent,
+            seed_box_keep_torrent_category=keep_category,
         ),
         seed_box=[
             SeedBox(
@@ -262,6 +305,79 @@ def test_seedbox_add_failures_persist_across_runs_and_eventually_skip(tmp_path, 
     assert final_state.seedbox_add_retry_count == 3
     assert final_state.is_skipped is True
     assert "seedbox" in final_state.skip_reason.lower()
+
+
+def test_seedbox_direct_mode_does_not_add_bt_bridge_torrent(tmp_path, monkeypatch):
+    config = make_direct_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    origin_path = Path(tmp_path / "origin.torrent")
+    origin_path.write_text("origin", encoding="utf-8")
+    bt_path = Path(tmp_path / "bt.torrent")
+    bt_path.write_text("bt", encoding="utf-8")
+
+    StateManager(config.transfer.torrent_info_path).update(
+        TorrentTransfer(
+            hash="origin-hash",
+            bt_hash="bt-hash",
+            origin_torrent_file_path=str(origin_path),
+            bt_torrent_file_path=str(bt_path),
+        )
+    )
+
+    client = FakeSeedboxClient([make_completed_torrent()], add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    assert client.add_calls == []
+
+
+def test_seedbox_direct_mode_cleans_up_origin_after_home_import_without_bt_bridge(tmp_path, monkeypatch):
+    config = make_direct_config(tmp_path)
+    Path(config.transfer.original_torrent_path).mkdir(parents=True, exist_ok=True)
+    Path(config.transfer.bt_path).mkdir(parents=True, exist_ok=True)
+    origin_path = Path(tmp_path / "origin.torrent")
+    origin_path.write_text("origin", encoding="utf-8")
+
+    StateManager(config.transfer.torrent_info_path).update(
+        TorrentTransfer(
+            hash="origin-hash",
+            origin_torrent_file_path=str(origin_path),
+            is_torrent_in_home_dl=True,
+        )
+    )
+
+    client = FakeSeedboxClient([make_completed_torrent()], add_response="Ok.")
+    monkeypatch.setattr(
+        seedbox_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    manager = SeedBoxManager(
+        config,
+        StateManager(config.transfer.torrent_info_path),
+        "seedbox",
+        "home",
+        threading.Event(),
+        async_downloads=False,
+    )
+    manager.run()
+
+    assert client.delete_calls == [{"torrent_hashes": "origin-hash", "delete_files": True}]
 
 
 def test_seedbox_skipped_state_stops_adding_bt(tmp_path, monkeypatch):

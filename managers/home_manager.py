@@ -46,6 +46,11 @@ class HomeManager:
         )
         self.home_snapshot = QbittorrentSnapshot(self.home_helper.client)
 
+    def _is_direct_mode(self) -> bool:
+        return getattr(self.config.transfer.data_plane_mode, "value", self.config.transfer.data_plane_mode) == (
+            "direct_piece_pull"
+        )
+
     def _init_configs(self):
         """Initialize configurations."""
         self.seed_box_config: SeedBox = next(filter(lambda x: x.name == self.seed_box_name, self.config.seed_box), None)
@@ -207,6 +212,7 @@ class HomeManager:
     def _process_home_torrents(self):
         home_dl: Client = self.home_helper.client
         self.home_snapshot.refresh()
+        direct_mode = self._is_direct_mode()
 
         # Get all hashes in home downloader
         home_dl_hashes = self.home_snapshot.hashes()
@@ -226,7 +232,62 @@ class HomeManager:
                 if add_torrent_count >= max_once_add:
                     break
 
-                if state.is_skipped or not state.has_bt_torrent():
+                if state.is_skipped:
+                    continue
+
+                if direct_mode:
+                    if state.hash in home_dl_hashes and not state.is_torrent_in_home_dl:
+                        if self._is_torrent_completed(home_dl, state.hash, self.home_snapshot):
+                            self._cleanup_final_origin_tags(home_dl, state, self.home_snapshot.torrent(state.hash))
+                            self._ensure_home_category(home_dl, self.config.transfer.home_origin_category)
+                            home_dl.torrents_set_category(
+                                category=self.config.transfer.home_origin_category,
+                                torrent_hashes=state.hash,
+                            )
+                            state.is_torrent_in_home_dl = True
+                            state.home_origin_recheck_count = 0
+                            state.reset_failures("home_add_retry_count")
+                            self.state_manager.update(state)
+                            if self.trigger_seedbox:
+                                self.trigger_seedbox.set()
+                        continue
+
+                    if (
+                        state.is_direct_payload_ready
+                        and state.direct_payload_root
+                        and state.hash not in home_dl_hashes
+                        and not state.is_torrent_in_home_dl
+                    ):
+                        if not os.path.exists(state.origin_torrent_file_path):
+                            self._record_home_failure(
+                                state,
+                                f"Origin torrent file missing locally: {state.origin_torrent_file_path}",
+                                "Origin torrent file missing while adding to home downloader",
+                            )
+                            continue
+                        logger.info(f"Direct payload ready. Adding Origin torrent to home downloader: {state.hash}")
+                        result = home_dl.torrents_add(
+                            torrent_files=state.origin_torrent_file_path,
+                            save_path=state.direct_payload_root,
+                            category=self.config.transfer.home_origin_temp_category,
+                            is_skip_checking=True,
+                            is_paused=self.config.transfer.pause_after_add_origin,
+                            tags=merge_tags(self.config.transfer.home_origin_tags, self._origin_ast_tags(state)),
+                        )
+                        if "Ok." in str(result):
+                            state.reset_failures("home_add_retry_count")
+                            self.state_manager.update(state)
+                        else:
+                            self._record_home_failure(
+                                state,
+                                f"Failed to add origin torrent to home downloader: {state.hash}",
+                                "Repeatedly failed to add origin torrent to home downloader",
+                            )
+                        continue
+
+                    continue
+
+                if not state.has_bt_torrent():
                     continue
 
                 # Scenario 1: Add BT torrent to home if it's on seedbox but not at home

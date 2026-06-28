@@ -84,6 +84,11 @@ class SeedBoxManager:
         )
         self.seed_box_snapshot = QbittorrentSnapshot(self.seed_box_helper.client)
 
+    def _is_direct_mode(self) -> bool:
+        return getattr(self.config.transfer.data_plane_mode, "value", self.config.transfer.data_plane_mode) == (
+            "direct_piece_pull"
+        )
+
     def _init_configs(self):
         """Initialize configurations for seedbox and downloaders."""
         self.seed_box_config = next(filter(lambda x: x.name == self.seed_box_name, self.config.seed_box), None)
@@ -472,6 +477,7 @@ class SeedBoxManager:
 
     def _process_seedbox_torrents(self):
         seed_box_dl: Client = self.seed_box_helper.client
+        direct_mode = self._is_direct_mode()
 
         # Refresh the cached snapshot once per run. It will use sync/maindata when available.
         self.seed_box_snapshot.refresh()
@@ -624,7 +630,10 @@ class SeedBoxManager:
 
                 # Check if exists in local state
                 state = self.state_manager.get(torrent.hash)
-                if not state or state.is_skipped or not state.has_bt_torrent():
+                if state is None and direct_mode:
+                    state = self._get_or_create_transfer(torrent.hash)
+
+                if not state or state.is_skipped:
                     # logger.debug(f"Torrent not in local state: {torrent.name}")
                     continue
 
@@ -634,7 +643,7 @@ class SeedBoxManager:
 
                 # Logic: If already in home downloader, delete from seedbox
                 if state.is_torrent_in_home_dl:
-                    if state.bt_hash in seed_box_torrent_hashes:
+                    if state.bt_hash and state.bt_hash in seed_box_torrent_hashes:
                         logger.info(f"Deleting completed BT torrent from seedbox: {state.bt_hash}")
                         seed_box_dl.torrents_delete(torrent_hashes=state.bt_hash, delete_files=True)
 
@@ -651,6 +660,12 @@ class SeedBoxManager:
                         else:
                             logger.info(f"Deleting completed Origin torrent from seedbox: {state.hash}")
                             seed_box_dl.torrents_delete(torrent_hashes=state.hash, delete_files=True)
+                    continue
+
+                if direct_mode:
+                    continue
+
+                if not state.has_bt_torrent():
                     continue
 
                 # Logic: Add BT torrent to seedbox if not present
