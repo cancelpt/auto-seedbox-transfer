@@ -6,6 +6,7 @@ import pytest
 
 from transfer.direct_piece_downloader import (
     DirectPieceDownloader,
+    DirectPieceDownloadProgressEvent,
     MissingRemoteFileError,
     PieceHashMismatchError,
 )
@@ -257,3 +258,81 @@ def test_direct_piece_downloader_raises_missing_remote_file(tmp_path):
         downloader.download()
 
     assert store.is_piece_complete(0) is False
+
+
+def test_direct_piece_downloader_emits_progress_events(tmp_path):
+    torrent = _build_torrent(
+        name="album",
+        piece_length=4,
+        files=[
+            ("disc1.txt", b"abc"),
+            ("nested/disc2.bin", b"defgh"),
+        ],
+    )
+    manifest = build_direct_piece_manifest(
+        torrent=torrent,
+        remote_save_path="/remote/downloads",
+        local_download_path=str(tmp_path / "local"),
+    )
+    store = DirectPieceResumeStore(resume_dir=tmp_path / "resume", manifest=manifest)
+    store.initialize()
+    store.mark_piece_complete(0)
+    events: list[DirectPieceDownloadProgressEvent] = []
+    downloader = DirectPieceDownloader(
+        torrent=torrent,
+        manifest=manifest,
+        resume_store=store,
+        reader_factory=_reader_factory(
+            {
+                manifest.files[0].remote_path: b"abc",
+                manifest.files[1].remote_path: b"defgh",
+            },
+            [],
+        ),
+        workers=1,
+        progress_callback=events.append,
+    )
+
+    result = downloader.download()
+
+    assert result.downloaded_pieces == 1
+    assert [event.kind for event in events] == ["started", "piece_verified", "completed"]
+    assert events[0].skipped_pieces == 1
+    assert events[1].piece_index == 1
+    assert events[1].downloaded_pieces == 1
+
+
+def test_direct_piece_downloader_emits_failure_event(tmp_path):
+    torrent = _build_torrent(
+        name="single.bin",
+        piece_length=4,
+        files=[("single.bin", b"abcd")],
+        single_file=True,
+    )
+    manifest = build_direct_piece_manifest(
+        torrent=torrent,
+        remote_save_path="/remote/downloads",
+        local_download_path=str(tmp_path / "local"),
+    )
+    store = DirectPieceResumeStore(resume_dir=tmp_path / "resume", manifest=manifest)
+    store.initialize()
+    events: list[DirectPieceDownloadProgressEvent] = []
+    downloader = DirectPieceDownloader(
+        torrent=torrent,
+        manifest=manifest,
+        resume_store=store,
+        reader_factory=_reader_factory(
+            {
+                manifest.files[0].remote_path: b"abce",
+            },
+            [],
+        ),
+        workers=1,
+        progress_callback=events.append,
+    )
+
+    with pytest.raises(PieceHashMismatchError, match="piece 0"):
+        downloader.download()
+
+    assert [event.kind for event in events] == ["started", "failed"]
+    assert events[-1].error == "piece 0 hash mismatch"

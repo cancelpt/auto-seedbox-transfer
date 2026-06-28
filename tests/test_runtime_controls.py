@@ -272,6 +272,11 @@ def test_direct_transfer_manager_respects_max_once_add(monkeypatch):
         "DirectPieceResumeStore",
         lambda **_kwargs: SimpleNamespace(),
     )
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "DirectPieceTelemetryProjector",
+        lambda **_kwargs: SimpleNamespace(handle_event=lambda _event: None, close=lambda: None),
+    )
     monkeypatch.setattr(direct_transfer_manager_module, "DirectPieceDownloader", FakeDownloader)
     monkeypatch.setattr(DirectTransferManager, "_local_torrent_is_usable", lambda *_args, **_kwargs: True)
 
@@ -335,6 +340,134 @@ def test_direct_transfer_manager_respects_max_once_add(monkeypatch):
     assert states["hash-1"].is_direct_payload_ready is True
     assert states["hash-2"].is_direct_payload_ready is True
     assert states["hash-3"].is_direct_payload_ready is False
+
+
+def test_direct_transfer_manager_wires_telemetry_projector(monkeypatch):
+    captured = {}
+
+    class FakeSnapshot:
+        def refresh(self):
+            return None
+
+        def torrent(self, _info_hash):
+            return SimpleNamespace(progress=1, save_path="/remote/save")
+
+    class FakeStateManager:
+        def __init__(self, states):
+            self._states = states
+
+        def get_all(self):
+            return self._states
+
+        def update(self, _state):
+            return None
+
+    class FakeTelemetryProjector:
+        def __init__(
+            self,
+            *,
+            manifest,
+            resume_store,
+            workers,
+            progress_log_interval_seconds,
+            stall_timeout_seconds,
+            logger,
+        ):
+            captured["manifest"] = manifest
+            captured["resume_store"] = resume_store
+            captured["workers"] = workers
+            captured["progress_log_interval_seconds"] = progress_log_interval_seconds
+            captured["stall_timeout_seconds"] = stall_timeout_seconds
+            captured["logger"] = logger
+            captured["closed"] = False
+            captured["projector"] = self
+
+        def handle_event(self, _event):
+            return None
+
+        def close(self):
+            captured["closed"] = True
+
+    class FakeDownloader:
+        def __init__(self, *, manifest, progress_callback, **_kwargs):
+            captured["downloader_manifest"] = manifest
+            captured["progress_callback"] = progress_callback
+
+        def download(self):
+            return SimpleNamespace(downloaded_pieces=1, skipped_pieces=0)
+
+    monkeypatch.setattr(direct_transfer_manager_module, "resolve_downloader_network_profile", lambda *_args: None)
+    monkeypatch.setattr(direct_transfer_manager_module, "resolve_seedbox_network_profile", lambda *_args: None)
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=object()),
+    )
+    monkeypatch.setattr(direct_transfer_manager_module, "QbittorrentSnapshot", lambda _client: FakeSnapshot())
+    monkeypatch.setattr(direct_transfer_manager_module, "TorrentFile", lambda path: SimpleNamespace(path=path))
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "build_direct_piece_manifest",
+        lambda *, torrent, remote_save_path, local_download_path: SimpleNamespace(
+            path=torrent.path,
+            remote_save_path=remote_save_path,
+            local_download_path=local_download_path,
+        ),
+    )
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "DirectPieceResumeStore",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(direct_transfer_manager_module, "DirectPieceTelemetryProjector", FakeTelemetryProjector)
+    monkeypatch.setattr(direct_transfer_manager_module, "DirectPieceDownloader", FakeDownloader)
+    monkeypatch.setattr(DirectTransferManager, "_local_torrent_is_usable", lambda *_args, **_kwargs: True)
+
+    states = {
+        "hash-1": SimpleNamespace(
+            is_skipped=False,
+            is_torrent_in_home_dl=False,
+            is_direct_payload_ready=False,
+            origin_torrent_file_path="/tmp/origin-1.torrent",
+            direct_payload_root=None,
+            last_error="",
+        ),
+    }
+
+    manager = DirectTransferManager(
+        config=SimpleNamespace(
+            transfer=SimpleNamespace(
+                max_once_add=1,
+                direct_piece_resume_path="/tmp/resume",
+                direct_piece_workers=3,
+                direct_piece_progress_log_interval_seconds=20,
+                direct_piece_stall_timeout_seconds=120,
+            ),
+            seed_box=[
+                SimpleNamespace(
+                    name="seedbox",
+                    ssh_host="seed.example",
+                    ssh_user="user",
+                    ssh_password="pass",
+                    ssh_port=22,
+                )
+            ],
+            downloaders=[SimpleNamespace(name="seedbox")],
+        ),
+        state_manager=FakeStateManager(states),
+        seed_box_name="seedbox",
+        target_download_dir="/downloads/home",
+        shutdown_event=threading.Event(),
+    )
+
+    manager.run()
+
+    assert captured["downloader_manifest"].path == "/tmp/origin-1.torrent"
+    assert captured["progress_callback"] == captured["projector"].handle_event
+    assert captured["workers"] == 3
+    assert captured["progress_log_interval_seconds"] == 20
+    assert captured["stall_timeout_seconds"] == 120
+    assert captured["closed"] is True
 
 
 def test_main_audit_prints_report_without_starting_managers(monkeypatch, tmp_path, capsys):

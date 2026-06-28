@@ -8,6 +8,7 @@ from managers.state_manager import StateManager
 from transfer.direct_piece_downloader import DirectPieceDownloader
 from transfer.direct_piece_manifest import build_direct_piece_manifest
 from transfer.direct_piece_resume import DirectPieceResumeStore
+from transfer.direct_piece_telemetry import DirectPieceTelemetryProjector
 from utils.config import Config, resolve_downloader_network_profile, resolve_seedbox_network_profile
 from utils.downloader_utils import get_downloader_client
 from utils.qbittorrent_snapshot import QbittorrentSnapshot
@@ -108,14 +109,34 @@ class DirectTransferManager:
                     resume_dir=self.config.transfer.direct_piece_resume_path,
                     manifest=manifest,
                 )
+                telemetry = DirectPieceTelemetryProjector(
+                    manifest=manifest,
+                    resume_store=resume_store,
+                    workers=self.config.transfer.direct_piece_workers,
+                    progress_log_interval_seconds=getattr(
+                        self.config.transfer,
+                        "direct_piece_progress_log_interval_seconds",
+                        30,
+                    ),
+                    stall_timeout_seconds=getattr(
+                        self.config.transfer,
+                        "direct_piece_stall_timeout_seconds",
+                        180,
+                    ),
+                    logger=logger,
+                )
                 downloader = DirectPieceDownloader(
                     torrent=torrent,
                     manifest=manifest,
                     resume_store=resume_store,
                     reader_factory=self._reader_factory,
                     workers=self.config.transfer.direct_piece_workers,
+                    progress_callback=telemetry.handle_event,
                 )
-                result = downloader.download()
+                try:
+                    result = downloader.download()
+                finally:
+                    telemetry.close()
                 state.is_direct_payload_ready = True
                 state.direct_payload_root = download_root
                 state.last_error = ""

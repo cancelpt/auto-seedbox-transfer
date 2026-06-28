@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -30,6 +31,16 @@ class DirectPieceDownloadResult:
     skipped_pieces: int = 0
 
 
+@dataclass(frozen=True)
+class DirectPieceDownloadProgressEvent:
+    kind: str
+    timestamp: float
+    downloaded_pieces: int
+    skipped_pieces: int
+    piece_index: int | None = None
+    error: str | None = None
+
+
 class DirectPieceDownloader:
     def __init__(
         self,
@@ -38,12 +49,16 @@ class DirectPieceDownloader:
         resume_store: DirectPieceResumeStore,
         reader_factory: Callable[[], object],
         workers: int = 4,
+        progress_callback: Callable[[DirectPieceDownloadProgressEvent], None] | None = None,
+        time_fn: Callable[[], float] = time.time,
     ):
         self.torrent = torrent
         self.manifest = manifest
         self.resume_store = resume_store
         self.reader_factory = reader_factory
         self.workers = max(1, workers)
+        self.progress_callback = progress_callback
+        self.time_fn = time_fn
 
     def prepare_local_files(self) -> None:
         for manifest_file in self.manifest.files:
@@ -66,7 +81,9 @@ class DirectPieceDownloader:
             downloaded_pieces=0,
             skipped_pieces=self.torrent.piece_count - len(incomplete_pieces),
         )
+        self._emit_progress("started", result=result)
         if not incomplete_pieces:
+            self._emit_progress("completed", result=result)
             return result
 
         piece_queue: queue.Queue[int] = queue.Queue()
@@ -94,6 +111,13 @@ class DirectPieceDownloader:
                         self.resume_store.mark_piece_complete(piece_index)
                         with result_lock:
                             result.downloaded_pieces += 1
+                            downloaded_pieces = result.downloaded_pieces
+                        self._emit_progress(
+                            "piece_verified",
+                            result=result,
+                            piece_index=piece_index,
+                            downloaded_pieces=downloaded_pieces,
+                        )
                     except Exception as exc:  # pragma: no cover - exercised via joined worker state
                         with error_lock:
                             if not error_holder:
@@ -115,9 +139,33 @@ class DirectPieceDownloader:
             thread.join()
 
         if error_holder:
+            self._emit_progress("failed", result=result, error=str(error_holder[0]))
             raise error_holder[0]
 
+        self._emit_progress("completed", result=result)
         return result
+
+    def _emit_progress(
+        self,
+        kind: str,
+        *,
+        result: DirectPieceDownloadResult,
+        piece_index: int | None = None,
+        downloaded_pieces: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        if self.progress_callback is None:
+            return
+        self.progress_callback(
+            DirectPieceDownloadProgressEvent(
+                kind=kind,
+                timestamp=self.time_fn(),
+                downloaded_pieces=result.downloaded_pieces if downloaded_pieces is None else downloaded_pieces,
+                skipped_pieces=result.skipped_pieces,
+                piece_index=piece_index,
+                error=error,
+            )
+        )
 
     def _read_piece(self, reader, piece_index: int) -> bytes:
         piece_data = bytearray()
