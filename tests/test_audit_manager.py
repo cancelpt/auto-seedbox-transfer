@@ -455,3 +455,63 @@ def test_build_progress_report_reconstructs_from_manifest_and_pieces_when_status
             "last_error": "",
         }
     ]
+
+
+def test_build_progress_report_reconstructs_from_manifest_and_pieces_when_status_sidecar_is_unreadable(
+    monkeypatch, tmp_path
+):
+    config = make_config(tmp_path, direct_mode=True)
+    state_manager = StateManager(config.transfer.torrent_info_path)
+    resume_dir = tmp_path / "resume"
+
+    state_manager.update(
+        TorrentTransfer(
+            hash="corrupt-status-hash",
+            origin_torrent_file_path=str(tmp_path / "corrupt-status.torrent"),
+        )
+    )
+    _manifest, pieces_path = write_progress_manifest_and_pieces(
+        resume_dir,
+        "corrupt-status-hash",
+        torrent_name="corrupt-status-album",
+        pieces=b"\x01\x00\x01",
+        created_at=100.0,
+        updated_at=101.0,
+    )
+    (resume_dir / "corrupt-status-hash.status.json").write_text("{not-json", encoding="utf-8")
+    os.utime(pieces_path, (150.0, 150.0))
+    monkeypatch.setattr(audit_manager_module.time, "time", lambda: 200.0)
+
+    report = AuditManager(config, state_manager, "seedbox_a", "home_a", FakeClient([]), FakeClient([])).build_progress_report()
+
+    assert report["summary"] == {
+        "total": 1,
+        "running": 1,
+        "stalled": 0,
+        "completed_ready_not_imported": 0,
+        "failed": 0,
+    }
+    assert report["transfers"] == [
+        {
+            "info_hash": "corrupt-status-hash",
+            "name": "corrupt-status-album",
+            "state": "running",
+            "piece_count": 3,
+            "completed_pieces": 2,
+            "remaining_pieces": 1,
+            "total_bytes": 10,
+            "completed_bytes": 6,
+            "percent": 60.0,
+            "workers": None,
+            "started_at": 100.0,
+            "updated_at": 150.0,
+            "last_piece_completed_at": 150.0,
+            "seconds_since_last_progress": 50.0,
+            "bytes_per_second_recent": None,
+            "bytes_per_second_average": None,
+            "eta_seconds": None,
+            "local_root": "/local/corrupt-status-album",
+            "remote_root": "/remote/corrupt-status-album",
+            "last_error": "",
+        }
+    ]
