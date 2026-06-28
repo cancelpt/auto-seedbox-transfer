@@ -273,7 +273,9 @@ class AuditManager:
         resume_path = Path(resume_dir)
         status_path = resume_path / f"{info_hash}.status.json"
         if status_path.exists():
-            return self._read_json_file(status_path)
+            snapshot = self._read_json_file(status_path)
+            if snapshot is not None:
+                return snapshot
         manifest_path = resume_path / f"{info_hash}.manifest.json"
         pieces_path = resume_path / f"{info_hash}.pieces"
         if not manifest_path.exists() or not pieces_path.exists():
