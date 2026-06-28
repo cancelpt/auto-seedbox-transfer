@@ -69,8 +69,13 @@ class DirectTransferManager:
 
     def _process_direct_transfers(self):
         self.seed_box_snapshot.refresh()
+        processed_transfers = 0
+        max_once_add = self.config.transfer.max_once_add
         for info_hash, state in self.state_manager.get_all().items():
             if self.shutdown_event.is_set():
+                break
+            if processed_transfers >= max_once_add:
+                logger.info(f"Direct transfer max add limit reached ({max_once_add})")
                 break
             if state.is_skipped or state.is_torrent_in_home_dl or state.is_direct_payload_ready:
                 continue
@@ -91,6 +96,7 @@ class DirectTransferManager:
                 self._record_error(state, f"Seedbox origin save_path unavailable for direct transfer: {info_hash}")
                 continue
 
+            processed_transfers += 1
             try:
                 torrent = TorrentFile(state.origin_torrent_file_path)
                 manifest = build_direct_piece_manifest(

@@ -96,9 +96,16 @@ def release_lock(lock_file):
         lock_file.close()
 
 
-def run_once_cycle(local_manager, seedbox_manager, home_manager, shutdown_event=None):
+def run_once_cycle(local_manager, seedbox_manager, home_manager, shutdown_event=None, direct_mode=False):
     """Run a bounded single-process workflow suitable for cron."""
-    if local_manager is None:
+    if direct_mode:
+        cycle = [
+            seedbox_manager,
+            local_manager,
+            home_manager,
+            seedbox_manager,
+        ]
+    elif local_manager is None:
         cycle = [
             seedbox_manager,
             local_manager,
@@ -264,7 +271,13 @@ def main(
 
         if run_once:
             logger.info("Run-once mode enabled. Processing one bounded cycle and exiting.")
-            run_once_cycle(local_manager, seedbox_manager, home_manager, shutdown_event=shutdown_event)
+            run_once_cycle(
+                local_manager,
+                seedbox_manager,
+                home_manager,
+                shutdown_event=shutdown_event,
+                direct_mode=use_direct_mode,
+            )
             return
 
         with ThreadPoolExecutor(max_workers=3) as executor:
