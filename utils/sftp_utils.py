@@ -143,6 +143,16 @@ class SFTPClient:
             logger.error(f"Failed to download file: {e}")
             raise
 
+    def read_range(self, remote_file: str, offset: int, length: int) -> bytes:
+        """Read a byte range from a remote file using the current SFTP session."""
+        try:
+            with self.sftp.open(remote_file, "rb") as remote_handle:
+                remote_handle.seek(offset)
+                return remote_handle.read(length)
+        except Exception as e:
+            logger.error(f"Failed to read remote range from {remote_file}: {e}")
+            raise
+
     def close(self):
         """关闭 SFTP 连接"""
         if self.sftp:

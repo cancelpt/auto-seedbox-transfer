@@ -9,6 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Iterator
 
 import bencodepy
 
@@ -116,6 +117,14 @@ class TorrentFile:
         size: int
         name: str
 
+    @dataclass(frozen=True)
+    class PieceSpan:
+        file_index: int
+        file_path: str
+        file_offset: int
+        piece_offset: int
+        length: int
+
     def __init__(self, torrent_file: str | dict):
         self.private = None
         self.comment = None
@@ -130,6 +139,10 @@ class TorrentFile:
         self.piece_count = None
         self._info_hash = None
         self._is_info_hash_calculated = False
+        self.is_multi_file = False
+        self.total_size = 0
+        self.file_offsets = []
+        self.piece_hashes = []
 
         try:
             if isinstance(torrent_file, dict):
@@ -170,38 +183,62 @@ class TorrentFile:
         files = info_dict.get(b"files", [])
 
         self.files = []
+        self.is_multi_file = bool(files)
 
         # 分块
         self.piece_length = info_dict.get(b"piece length", 0)
 
         # 分块设置的k，2^k
-        self.piece_length_k = int(math.log2(self.piece_length))
+        self.piece_length_k = int(math.log2(self.piece_length)) if self.piece_length else 0
 
         # 块数量
-        self.piece_count = int(info_dict.get(b"pieces", b"").__len__() / 20)
+        raw_piece_hashes = info_dict.get(b"pieces", b"")
+        self.piece_count = int(raw_piece_hashes.__len__() / 20)
+        self.piece_hashes = [
+            raw_piece_hashes[index : index + 20]
+            for index in range(0, len(raw_piece_hashes), 20)
+        ]
 
-        for file in files:
-            # 获取文件路径
-            path = file.get(b"path", [])
-            # 获取文件大小
-            length = file.get(b"length", 0)
+        if self.is_multi_file:
+            for file in files:
+                # 获取文件路径
+                path = file.get(b"path", [])
+                # 获取文件大小
+                length = file.get(b"length", 0)
 
-            # 将文件路径拼接成文件名 PurePosixPath(path1) / path2
-            temp_path = None
-            for p in path:
-                path_str = safe_decode(p)
-                if temp_path is None:
-                    file_path = path_str
-                else:
-                    file_path = PurePosixPath(temp_path) / path_str
-                temp_path = file_path
+                # 将文件路径拼接成文件名 PurePosixPath(path1) / path2
+                temp_path = None
+                for p in path:
+                    path_str = safe_decode(p)
+                    if temp_path is None:
+                        file_path = path_str
+                    else:
+                        file_path = PurePosixPath(temp_path) / path_str
+                    temp_path = file_path
+                normalized_path = temp_path if isinstance(temp_path, str) else temp_path.as_posix()
+                self.files.append(
+                    self.File(
+                        path=normalized_path,
+                        size=length,
+                        name=normalized_path if isinstance(temp_path, str) else temp_path.name,
+                    )
+                )
+        else:
+            single_file_length = info_dict.get(b"length", 0)
             self.files.append(
                 self.File(
-                    path=temp_path if isinstance(temp_path, str) else temp_path.as_posix(),
-                    size=length,
-                    name=temp_path if isinstance(temp_path, str) else temp_path.name,
+                    path=self.file_name,
+                    size=single_file_length,
+                    name=self.file_name,
                 )
             )
+
+        self.file_offsets = []
+        offset = 0
+        for file in self.files:
+            self.file_offsets.append(offset)
+            offset += file.size
+        self.total_size = offset
 
         # comment
         self.comment = safe_decode(self.torrent_data.get(b"comment", b""))
@@ -239,7 +276,55 @@ class TorrentFile:
         if self._is_info_hash_calculated:
             return self._info_hash
         self._info_hash = hashlib.sha1(bencodepy.encode(self.torrent_data.get(b"info"))).hexdigest()
+        self._is_info_hash_calculated = True
         return self._info_hash
+
+    @property
+    def piece_hash_hexes(self) -> list[str]:
+        return [piece_hash.hex() for piece_hash in self.piece_hashes]
+
+    def get_piece_size(self, piece_index: int) -> int:
+        if piece_index < 0 or piece_index >= self.piece_count:
+            raise IndexError(f"piece index out of range: {piece_index}")
+        piece_start = piece_index * self.piece_length
+        remaining = self.total_size - piece_start
+        return min(self.piece_length, max(remaining, 0))
+
+    def iter_piece_file_spans(self, piece_index: int) -> Iterator["TorrentFile.PieceSpan"]:
+        piece_size = self.get_piece_size(piece_index)
+        piece_start = piece_index * self.piece_length
+        piece_offset = 0
+
+        for file_index, file in enumerate(self.files):
+            if piece_offset >= piece_size:
+                break
+
+            file_start = self.file_offsets[file_index]
+            file_end = file_start + file.size
+            if piece_start >= file_end:
+                continue
+
+            current_piece_position = piece_start + piece_offset
+            if current_piece_position < file_start:
+                continue
+
+            file_offset = current_piece_position - file_start
+            available = file.size - file_offset
+            span_length = min(available, piece_size - piece_offset)
+            if span_length <= 0:
+                continue
+
+            yield self.PieceSpan(
+                file_index=file_index,
+                file_path=file.path,
+                file_offset=file_offset,
+                piece_offset=piece_offset,
+                length=span_length,
+            )
+            piece_offset += span_length
+
+        if piece_offset != piece_size:
+            raise ValueError(f"piece {piece_index} spans beyond torrent file layout")
 
     def change_announce(self, announce_list):
         cleaned_list = [t.strip() for t in announce_list if t and t.strip()]
