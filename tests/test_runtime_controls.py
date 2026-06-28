@@ -2,7 +2,9 @@ import threading
 import time
 from types import SimpleNamespace
 
+import managers.direct_transfer_manager as direct_transfer_manager_module
 import main as main_module
+from managers.direct_transfer_manager import DirectTransferManager
 from main import run_once_cycle, try_acquire_lock, wait_for_next_run
 
 
@@ -42,6 +44,21 @@ def test_run_once_cycle_uses_bounded_single_process_flow():
     )
 
     assert calls == ["local", "seedbox", "local", "seedbox", "home", "seedbox"]
+
+
+def test_run_once_cycle_uses_direct_mode_sequence():
+    calls = []
+    shutdown_event = threading.Event()
+
+    run_once_cycle(
+        Recorder("direct", calls, shutdown_event=shutdown_event),
+        Recorder("seedbox", calls, shutdown_event=shutdown_event),
+        Recorder("home", calls, shutdown_event=shutdown_event),
+        shutdown_event=shutdown_event,
+        direct_mode=True,
+    )
+
+    assert calls == ["seedbox", "direct", "home", "seedbox"]
 
 
 def test_run_once_cycle_stops_when_shutdown_is_set():
@@ -139,6 +156,7 @@ def test_main_run_once_short_circuits_when_lock_not_acquired(monkeypatch, tmp_pa
 
 def test_main_direct_mode_uses_direct_transfer_manager_in_run_once(monkeypatch, tmp_path):
     calls = []
+    run_once_kwargs = {}
 
     config = SimpleNamespace(
         transfer=SimpleNamespace(
@@ -183,7 +201,11 @@ def test_main_direct_mode_uses_direct_transfer_manager_in_run_once(monkeypatch, 
         "HomeManager",
         lambda *_args, **_kwargs: calls.append("home") or DummyManager(),
     )
-    monkeypatch.setattr(main_module, "run_once_cycle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main_module,
+        "run_once_cycle",
+        lambda *_args, **kwargs: run_once_kwargs.update(kwargs),
+    )
     monkeypatch.setattr(main_module, "validate_route_config", lambda *_args: None)
 
     main_module.main(
@@ -195,6 +217,124 @@ def test_main_direct_mode_uses_direct_transfer_manager_in_run_once(monkeypatch, 
     )
 
     assert calls == ["direct", "seedbox", "home"]
+    assert run_once_kwargs["direct_mode"] is True
+
+
+def test_direct_transfer_manager_respects_max_once_add(monkeypatch):
+    download_calls = []
+
+    class FakeSnapshot:
+        def refresh(self):
+            return None
+
+        def torrent(self, _info_hash):
+            return SimpleNamespace(progress=1, save_path="/remote/save")
+
+    class FakeStateManager:
+        def __init__(self, states):
+            self._states = states
+            self.updated = []
+
+        def get_all(self):
+            return self._states
+
+        def update(self, state):
+            self.updated.append(state)
+
+    class FakeDownloader:
+        def __init__(self, *, manifest, **_kwargs):
+            self.manifest = manifest
+
+        def download(self):
+            download_calls.append(self.manifest.path)
+            return SimpleNamespace(downloaded_pieces=1, skipped_pieces=0)
+
+    monkeypatch.setattr(direct_transfer_manager_module, "resolve_downloader_network_profile", lambda *_args: None)
+    monkeypatch.setattr(direct_transfer_manager_module, "resolve_seedbox_network_profile", lambda *_args: None)
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "get_downloader_client",
+        lambda **_kwargs: SimpleNamespace(client=object()),
+    )
+    monkeypatch.setattr(direct_transfer_manager_module, "QbittorrentSnapshot", lambda _client: FakeSnapshot())
+    monkeypatch.setattr(direct_transfer_manager_module, "TorrentFile", lambda path: SimpleNamespace(path=path))
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "build_direct_piece_manifest",
+        lambda *, torrent, remote_save_path, local_download_path: SimpleNamespace(
+            path=torrent.path,
+            remote_save_path=remote_save_path,
+            local_download_path=local_download_path,
+        ),
+    )
+    monkeypatch.setattr(
+        direct_transfer_manager_module,
+        "DirectPieceResumeStore",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(direct_transfer_manager_module, "DirectPieceDownloader", FakeDownloader)
+    monkeypatch.setattr(DirectTransferManager, "_local_torrent_is_usable", lambda *_args, **_kwargs: True)
+
+    states = {
+        "hash-1": SimpleNamespace(
+            is_skipped=False,
+            is_torrent_in_home_dl=False,
+            is_direct_payload_ready=False,
+            origin_torrent_file_path="/tmp/origin-1.torrent",
+            direct_payload_root=None,
+            last_error="",
+        ),
+        "hash-2": SimpleNamespace(
+            is_skipped=False,
+            is_torrent_in_home_dl=False,
+            is_direct_payload_ready=False,
+            origin_torrent_file_path="/tmp/origin-2.torrent",
+            direct_payload_root=None,
+            last_error="",
+        ),
+        "hash-3": SimpleNamespace(
+            is_skipped=False,
+            is_torrent_in_home_dl=False,
+            is_direct_payload_ready=False,
+            origin_torrent_file_path="/tmp/origin-3.torrent",
+            direct_payload_root=None,
+            last_error="",
+        ),
+    }
+
+    manager = DirectTransferManager(
+        config=SimpleNamespace(
+            transfer=SimpleNamespace(
+                max_once_add=2,
+                direct_piece_resume_path="/tmp/resume",
+                direct_piece_workers=1,
+            ),
+            seed_box=[
+                SimpleNamespace(
+                    name="seedbox",
+                    ssh_host="seed.example",
+                    ssh_user="user",
+                    ssh_password="pass",
+                    ssh_port=22,
+                )
+            ],
+            downloaders=[SimpleNamespace(name="seedbox")],
+        ),
+        state_manager=FakeStateManager(states),
+        seed_box_name="seedbox",
+        target_download_dir="/downloads/home",
+        shutdown_event=threading.Event(),
+    )
+
+    manager.run()
+
+    assert download_calls == [
+        "/tmp/origin-1.torrent",
+        "/tmp/origin-2.torrent",
+    ]
+    assert states["hash-1"].is_direct_payload_ready is True
+    assert states["hash-2"].is_direct_payload_ready is True
+    assert states["hash-3"].is_direct_payload_ready is False
 
 
 def test_main_audit_prints_report_without_starting_managers(monkeypatch, tmp_path, capsys):
