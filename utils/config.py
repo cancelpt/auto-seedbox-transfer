@@ -16,6 +16,11 @@ class SeedboxOriginDataMissingPolicy(str, Enum):
     force_recheck_and_rebuild_bt = "force_recheck_and_rebuild_bt"
 
 
+class TransferDataPlaneMode(str, Enum):
+    qb_bt = "qb_bt"
+    direct_piece_pull = "direct_piece_pull"
+
+
 class ProxyMode(str, Enum):
     direct = "direct"
     http = "http"
@@ -65,6 +70,9 @@ class Transfer(BaseModel):
     original_torrent_path: str
     bt_path: str
     torrent_info_path: str
+    data_plane_mode: TransferDataPlaneMode = TransferDataPlaneMode.qb_bt
+    direct_piece_workers: int = Field(default=4, gt=0)
+    direct_piece_resume_path: Optional[str] = None
     bt_trackers: List[str]
     seedbox_origin_data_missing_policy: SeedboxOriginDataMissingPolicy
     seedbox_origin_recovery_max_rechecks: int = 1
@@ -84,6 +92,14 @@ class Transfer(BaseModel):
     home_interval: int = 30
     auto_dl_torrent_from_seedbox: bool = False
     exit_on_finish: bool = False
+
+    @model_validator(mode="after")
+    def _validate_direct_piece_pull_requirements(self):
+        if self.data_plane_mode != TransferDataPlaneMode.direct_piece_pull:
+            return self
+        if not self.direct_piece_resume_path or not self.direct_piece_resume_path.strip():
+            raise ValueError("direct_piece_resume_path is required when data_plane_mode is 'direct_piece_pull'")
+        return self
 
 
 class SeedBox(BaseModel):

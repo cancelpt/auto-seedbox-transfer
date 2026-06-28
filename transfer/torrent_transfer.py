@@ -25,6 +25,8 @@ class TorrentTransfer(BaseModel):
     is_bt_in_seed_box: bool = False
     is_bt_in_home_dl: bool = False
     is_torrent_in_home_dl: bool = False
+    is_direct_payload_ready: bool = False
+    direct_payload_root: str = ""
     seedbox_bt_health: str = SEEDBOX_BT_HEALTH_UNKNOWN
     seedbox_origin_data_status: str = ORIGIN_DATA_STATUS_OK
     seedbox_origin_data_recheck_count: int = 0
