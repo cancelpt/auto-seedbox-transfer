@@ -5,6 +5,12 @@ transfer:
   bt_path: ../auto-seedbox-transfer-workspace/bt
   # 种子传输状态记录文件
   torrent_info_path: ../auto-seedbox-transfer-workspace/torrent_info.json
+  # 数据面传输模式：qb_bt 为当前 BT 桥接流程，direct_piece_pull 为后续直拉分片流程
+  data_plane_mode: qb_bt
+  # direct_piece_pull 模式下的并发 worker 数；保留默认 4
+  direct_piece_workers: 4
+  # direct_piece_pull 模式下的分片恢复状态目录；留空表示继续使用 legacy BT 模式
+  direct_piece_resume_path: ''
   # 当盒子 qB 任务存在但资源文件 missingFiles 时的处理策略；必填
   # pause_transfer: 默认建议，阻断该任务并等待人工处理，不删除、不重校验、不重建
   # skip_transfer: 标记跳过，不删除远端任务或文件

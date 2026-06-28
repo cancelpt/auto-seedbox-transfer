@@ -47,8 +47,42 @@ def make_config_dict():
 def test_config_without_network_profiles_remains_compatible():
     config = Config(**make_config_dict())
 
+    assert config.transfer.data_plane_mode == "qb_bt"
+    assert config.transfer.direct_piece_workers == 4
+    assert config.transfer.direct_piece_resume_path is None
     assert config.downloaders[0].network_profile is None
     assert config.seed_box[0].network_profile is None
+
+
+def test_direct_piece_pull_mode_requires_resume_path():
+    config_data = make_config_dict()
+    config_data["transfer"]["data_plane_mode"] = "direct_piece_pull"
+
+    with pytest.raises(ValueError, match="direct_piece_resume_path"):
+        Config(**config_data)
+
+
+def test_direct_piece_pull_mode_accepts_positive_worker_count_with_resume_path():
+    config_data = make_config_dict()
+    config_data["transfer"]["data_plane_mode"] = "direct_piece_pull"
+    config_data["transfer"]["direct_piece_workers"] = 8
+    config_data["transfer"]["direct_piece_resume_path"] = "/tmp/direct-piece-resume"
+
+    config = Config(**config_data)
+
+    assert config.transfer.data_plane_mode == "direct_piece_pull"
+    assert config.transfer.direct_piece_workers == 8
+    assert config.transfer.direct_piece_resume_path == "/tmp/direct-piece-resume"
+
+
+def test_direct_piece_pull_mode_rejects_non_positive_worker_count():
+    config_data = make_config_dict()
+    config_data["transfer"]["data_plane_mode"] = "direct_piece_pull"
+    config_data["transfer"]["direct_piece_workers"] = 0
+    config_data["transfer"]["direct_piece_resume_path"] = "/tmp/direct-piece-resume"
+
+    with pytest.raises(ValueError, match="direct_piece_workers"):
+        Config(**config_data)
 
 
 def test_network_profiles_are_loaded_and_resolved():
