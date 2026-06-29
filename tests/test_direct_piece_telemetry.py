@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 
 from transfer.direct_piece_downloader import DirectPieceDownloadProgressEvent
