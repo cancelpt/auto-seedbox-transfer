@@ -4,6 +4,10 @@
 
 仅支持 qBittorrent 下载器（4.3.9~4.6.7）。
 
+## 使用 AI 协助安装或更新
+
+如果你想让 AI（Codex、Claude 等）协助配置、安装或更新 AST，请把 `INSTALL.md` 交给它。`INSTALL.md` 是面向 AI 的安装/更新指南，可帮助它先确认环境与现有配置，再安全执行。
+
 ## 环境要求
 
 - Python 3.8+

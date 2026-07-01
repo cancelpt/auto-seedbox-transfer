@@ -1,153 +1,155 @@
-# Auto Seedbox Transfer 安装与运行指南
+# Auto Seedbox Transfer Installation and Operation Guide
 
-> 这份文档是写给 AI 助手看的。用户通常会把它和本仓库的 `README.md` 一起交给你，然后让你在本地读取需求、再通过 SSH 去目标机器（常见是 NAS、VPS、Linux 服务器）完成安装、更新和运行。
+> This document is written for an AI assistant.
+> Users may hand you this file with `README.md` and ask you to configure, install, update, or operate this project on a NAS, VPS, or Linux host, usually over SSH.
 >
-> 默认工作方式：先问清楚，再动手；先读现状，再改配置；先做最小改动，再扩展到定时或自动化。
+> Default rule: ask first, read current state, make the smallest safe change, then add scheduling or automation only if needed.
 
-## 你应该先把自己当成“本地协调器 + 远端执行者”
+## Treat yourself as a local coordinator plus a remote executor
 
-你不是直接登录到用户桌面就结束了，而是要把用户的意图转换成远端主机上的实际操作。通常流程是：
+You are not done after reading the repository locally. Translate the user's intent into concrete actions on the target host.
 
-1. 在本地读 `README.md` 和本文件。
-2. 通过 SSH 读取目标主机现状。
-3. 先问清用户缺失的信息。
-4. 选择最保守、最少破坏的安装/更新路径。
-5. 改完后做验证，再决定是否启用定时任务或其他自动化。
+Typical flow:
 
-如果你发现信息不完整，不要猜。先停下来问用户。
+1. Read `README.md` and this file locally.
+2. Inspect the current state of the target host over SSH.
+3. Ask the user for any missing information.
+4. Choose the least destructive install or update path.
+5. Verify the result before enabling cron or other automation.
 
-## 先问用户的关键问题
+If key information is missing, ask instead of guessing.
 
-在任何安装或更新前，先确认下面这些问题：
+## Questions to confirm first
 
-- 这是全新安装，还是更新已有安装？
-- 目标主机是什么？是本机、NAS、VPS，还是容器里的 Linux？
-- SSH 别名或连接方式是什么？
-- 目标机器上是否已经有 `config.yaml`？
-- 目标机器上是否已经有 `crontab` 或其他启动项？
-- 这次想用哪种运行方式？
-  - 单次运行（one-shot）
-  - 定时运行（crontab）
-  - 进度监控（watch / progress）
-  - 只读检查（audit）
-  - 残留清理（cleanup-plan / apply-cleanup）
-  - 常驻服务/守护进程（如果该版本和环境支持）
-- Seedbox 下载器叫什么？本地下载器叫什么？
-- 下载目录是什么？
-- 是否需要保留当前的标签、分类、下载状态和 torrent 文件？
-- 这次是否需要从 Seedbox 侧拉取种子文件或其他资源？如果需要，源路径是什么？
-- 是否需要 Transmission RPC 做对账或清理？
-- 这次是否涉及代理 / 网络画像（如果有，qB 和 SFTP 是共用一套还是分别配置）？
-- 是否需要 direct-piece 进度显示和 watch 模式？
+Before installing or updating, confirm:
 
-如果其中任何一项不明确，就不要默认。
+- Is this a fresh install or an update to an existing deployment?
+- What is the target host: local machine, NAS, VPS, bare Linux, or Linux inside a container?
+- What SSH alias or connection method should be used?
+- Does the target machine already have `config.yaml`?
+- Does the target machine already have `crontab`, a systemd unit, or another startup wrapper?
+- Which operating style does the user want this time?
+  - one-shot run
+  - scheduled run via cron
+  - live progress monitoring (`--progress --watch`)
+  - read-only audit (`--audit`)
+  - cleanup planning or cleanup execution (`--cleanup-plan` / `--apply-cleanup`)
+  - daemon/service mode, if the project version and host support it
+- What is the seedbox downloader name? What is the local downloader name?
+- What are the relevant download paths?
+- Should the current labels, categories, downloader state, and torrent files be preserved?
+- Does this run need to pull torrent files or other resources from the seedbox side? If yes, from which source path?
+- Is Transmission RPC involved for reconciliation or cleanup?
+- Does this run depend on a proxy or network profile? If yes, do qBittorrent and SFTP share one profile or use separate ones?
+- Does the user want direct-piece progress visibility or watch mode?
 
-## 这套项目支持哪些运行方式
+If any answer is unclear, do not invent a default.
 
-先分清两件事：
+## Supported deployment shapes and runtime modes
 
-- 部署形状：cron、手动执行、常驻循环。它决定谁来触发。
-- 运行模式：`--audit`、`--run_once`、`--progress/--watch`、`--cleanup-plan`、`--apply-cleanup`。它决定这次做什么。
+Separate these ideas:
 
-cron 只是触发方式，不天然等于 `--run_once`。现有 crontab 可能是 `--run_once` 风格，也可能是默认循环配合 `exit_on_finish` 风格；更新前先读现有 crontab 和 `config.yaml` 再改。
+- Deployment shape: manual invocation, cron, or a long-running loop. This decides who starts the process.
+- Runtime mode: `--audit`, `--run_once`, `--progress --watch`, `--cleanup-plan`, `--apply-cleanup`. This decides what the process does.
 
-| 模式 | 用途 | 备注 |
+Cron is only a trigger mechanism. It is not automatically the same thing as `--run_once`.
+An existing deployment may use cron with `--run_once`, or cron may call the default loop and rely on `exit_on_finish` to self-terminate. Always read the existing cron entry and `config.yaml` before changing either one.
+
+| Mode | Purpose | Notes |
 | --- | --- | --- |
-| `--audit` | 只读检查/对账 | 不改状态 |
-| `--run_once` | 单次执行后退出 | 最适合放进 cron |
-| cron | 外部调度入口 | 可能调用 `--run_once`，也可能调用默认循环 |
-| `--progress/--watch` | 实时进度查看 | 主要用于排障或直拉分片进度 |
-| `--cleanup-plan` | 只读清理计划 | 先审查再执行 |
-| `--apply-cleanup` | 执行已批准的安全清理项 | 默认不删资源文件 |
+| `--audit` | Read-only inspection and reconciliation | Should not mutate state |
+| `--run_once` | Run one pass and exit | Usually the safest cron payload |
+| cron | External scheduler | May call `--run_once` or the default loop |
+| `--progress --watch` | Live progress display | Mostly for debugging and direct-piece visibility |
+| `--cleanup-plan` | Dry-run cleanup planning | Review before execution |
+| `--apply-cleanup` | Execute approved cleanup actions | Should be used only after review |
 
-安装前，先和用户确认要走哪一种或哪几种方式。不要默认只有一种。
+Confirm the intended shape and mode before changing the host.
 
-### 1. 单次运行（one-shot）
+### 1. One-shot execution
 
-适合：
-- 手动验证
-- 一次性导入/转移
-- 配合 cron 做每次独立执行
+Best for:
+- manual verification
+- one-time imports or transfers
+- cron jobs that should run independently and exit
 
-特点：
-- 运行一次后退出
-- 最容易排查
-- 最适合先验证配置是否正确
+Properties:
+- runs once and exits
+- easiest to debug
+- best first validation path for a new or updated configuration
 
-### 2. 定时运行（crontab）
+### 2. Scheduled execution with cron
 
-适合：
-- 需要定期扫描、同步或转移
-- 用户已有 cron 习惯
-- 机器长期运行但不想常驻一个前台进程
+Best for:
+- periodic scanning, synchronization, or transfer
+- users who already operate similar jobs with cron
+- hosts that stay online but should not keep a foreground process attached
 
-注意：
-- 这类部署常见有两种风格：
-  - cron 里直接调用 `--run_once`
-  - cron 里调用默认循环，并靠 `exit_on_finish` 决定是否自退出
-- 如果目标机器上已经有 cron 条目，优先保留现有风格，不要无脑重写成另一种。
-- 如果用户没有明确要求，不要重复添加第二条类似 cron。
+Guardrails:
+- two common styles exist:
+  - cron calls `--run_once`
+  - cron calls the default loop and relies on `exit_on_finish`
+- if the target already has a cron entry, preserve the current style unless the user explicitly asks to change it
+- do not add a second near-duplicate cron entry unless the user explicitly wants that
 
-### 3. 进度监控（watch / progress）
+### 3. Progress monitoring (`--progress --watch`)
 
-适合：
-- 排障
-- 查看 direct-piece 进度
-- 验证下载状态变化
+Best for:
+- troubleshooting
+- watching direct-piece progress
+- checking that progress updates match real state
 
-特点：
-- 更像调试工具，不是默认生产模式
-- 需要用户明确想看实时进度时再启用
+Properties:
+- operational or debugging mode, not the default production mode
+- enable only when the user explicitly wants live progress output
 
-另外先确认 `data_plane_mode`：
+Also confirm `data_plane_mode` before using watch mode:
 
-- `qb_bt`：当前默认桥接流程。
-- `direct_piece_pull`：另一条模式，只有用户明确要求才切换；需要确认 `direct_piece_workers`、`direct_piece_resume_path`、代理/网络画像，以及是否要 `--progress/--watch`。
+- `qb_bt`: the default bridge workflow
+- `direct_piece_pull`: an alternate mode; only switch to it when the user explicitly wants it, and confirm `direct_piece_workers`, `direct_piece_resume_path`, proxy/network profile requirements, and whether live progress output is desired
 
-### 4. 只读检查（audit）
+### 4. Read-only audit (`--audit`)
 
-适合：
-- 先看现状，不动数据
-- 先确认配置和状态能否被正确读取
-- 更新前做健康检查
+Best for:
+- inspecting the current state without changing data
+- confirming that configuration and live state can be read correctly
+- pre-update health checks
 
-特点：
-- 不应修改任务状态或删除内容
-- 如果用户只是说“先看看现在什么情况”，优先用它
+Properties:
+- should not change task state or delete content
+- if the user says “just inspect the current state first”, start here
 
-### 5. 残留清理（cleanup-plan / apply-cleanup）
+### 5. Cleanup planning and execution
 
-适合：
-- 需要清理残留任务、标签、文件或对账异常
-- 需要先审查哪些项安全，之后再执行
+Best for:
+- cleaning residual tasks, labels, files, or reconciliation anomalies
+- reviewing safe cleanup candidates before execution
 
-建议流程：
-1. 先跑 `--cleanup-plan`
-2. 让用户确认计划
-3. 再跑 `--apply-cleanup`
+Recommended flow:
+1. run `--cleanup-plan`
+2. ask the user to approve the plan
+3. run `--apply-cleanup`
 
-不要跳过计划阶段。
+Do not skip the planning step.
 
-### 6. 常驻服务 / 守护进程
+### 6. Daemon or service mode
 
-只有在用户明确要求，且当前版本/环境支持时才启用。
+Use this only when the user explicitly asks for it and the current project version plus host environment support it. If support is unclear, ask.
 
-如果你不确定项目版本是否支持，先问用户，不要把它当默认选项。
+## Fresh install workflow
 
-## 全新安装流程
+For a new target host, use this order.
 
-如果目标主机上还没有这套项目，按下面顺序做。
+### Step 1: confirm the environment
 
-### 第一步：确认环境
+Check:
+- whether the Python version is compatible with the repository's current requirements
+- whether the target path already exists or should be created
+- whether the user already has the seedbox, downloader, and directory layout ready
 
-先确认：
-- Python 版本是否满足要求（本项目按 `requirements.txt` 和仓库现状运行）
-- 目标路径是否存在或是否需要创建
-- 用户是否已经准备好 seedbox / downloader / 下载目录
+### Step 2: create an isolated Python environment and install dependencies
 
-### 第二步：准备虚拟环境和依赖
-
-在目标主机上创建独立环境，然后安装依赖。
+On the target host, create an isolated environment and install the repository dependencies.
 
 ```bash
 python -m venv .venv
@@ -155,249 +157,255 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-如果用户已经有自己的 Python 环境，也可以复用，但你要先问清楚，不要擅自复用系统环境。
+Reuse an existing managed Python environment only after explicit confirmation. Do not silently use a system environment.
 
-### 第三步：准备配置文件
+### Step 3: prepare the configuration file
 
-仓库根目录有示例配置：
+The repository provides an example configuration file:
 
 - `config.example.yaml`
 
-新装时通常要：
+A typical fresh install starts with:
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-然后把真实值填进去。
+Then fill in the real values.
 
-你应该重点确认这些配置区：
+Pay special attention to these configuration areas:
 
 - `transfer`
-  - 原始种子目录
-  - BT 输出目录
-  - 状态文件
-  - 运行模式
-  - 轮询/重试/恢复相关参数
-  - 清理/保留策略
+  - source torrent directory
+  - BT output directory
+  - state files
+  - operating mode
+  - poll, retry, and recovery parameters
+  - cleanup and retention policy
   - `data_plane_mode`
-    - `qb_bt` 是默认路径
-    - `direct_piece_pull` 不是默认路径，切换前要单独确认对应参数
+    - `qb_bt` is the default path
+    - `direct_piece_pull` is not the default path; confirm all related knobs before switching
 - `seed_box`
-  - Seedbox 连接信息
-  - Seedbox 上的 torrent 目录
+  - seedbox connection settings
+  - seedbox-side torrent directory
 - `downloaders`
-  - 本地下载器连接信息
-  - 需要回传或扫描的分类
-  - `source_categories` 优先；`want_torrent_category` 仍兼容。现有配置若已经使用旧键，除非用户明确要求迁移，不要顺手改名。
+  - local downloader connection settings
+  - categories to scan or reconcile
+  - `source_categories` is preferred; `want_torrent_category` is still supported. If an existing configuration already uses the legacy key, do not rename it casually unless the user explicitly wants migration.
 
-如果用户没说明某个字段，你要停下来问，不要随便填一个看起来合理的默认值。
+Ask for any missing required field.
 
-### 第四步：第一次验证
+### Step 4: first verification
 
-先做只读检查，再做单次运行。
+Run a read-only check first, then run a single pass.
 
-建议顺序：
+Recommended order:
 
 ```bash
 python main.py --config_path config.yaml --seed_box_name <seed_box_name> --home_dl_name <home_dl_name> --audit
 python main.py --config_path config.yaml --seed_box_name <seed_box_name> --home_dl_name <home_dl_name> --run_once
 ```
 
-如果用户要看进度，再加：
+If the user wants live progress output, also run:
 
 ```bash
 python main.py --config_path config.yaml --seed_box_name <seed_box_name> --home_dl_name <home_dl_name> --progress --watch
 ```
 
-### 第五步：决定是否启用 cron
+### Step 5: decide whether to enable cron
 
-只有在单次运行成功后，再决定要不要上定时任务。
+Only decide on scheduling after the one-shot run succeeds.
 
-如果用户要 cron：
-- 先问清楚是“周期性独立执行”还是“常驻逻辑外面再加 flock 防并发”
-- 不要默认删除现有 cron
-- 不要默认替换现有日志或 lock 文件
+If the user wants cron:
+- confirm whether the job should be an independent periodic execution or a wrapped execution style with `flock`
+- do not delete an existing cron by default
+- do not replace an existing lock file path or log path by default
 
-## 现有安装 / 更新流程
+## Existing installation / update workflow
 
-如果目标主机上已经装过这套项目，默认把它当作“更新”，不要直接重装。
+If the target host already has this project, treat it as an update. Do not jump to reinstall.
 
-### 第一步：先读现状
+### Step 1: read the current state first
 
-先看这三样：
+Inspect these items first:
+- current code directory
+- current `config.yaml`
+- current `crontab`
 
-- 当前代码目录
-- 当前 `config.yaml`
-- 当前 `crontab`
+If the target directory is not a git repository, do not assume `git pull` is available. In that case, update by copying or syncing the required files from the user's known-good local source.
 
-如果目标目录不是 git 仓库，也不要假定能直接 `git pull`。这种情况下，应该从用户本地的最新代码拷贝/同步需要更新的文件。
-如果目标目录是 git 仓库，先检查 `git branch --show-current`、`git rev-parse HEAD`、`git status --short`、`git remote -v`。工作树不干净或远端不明确时，不要直接 `git pull`；先保留现状，再决定是局部更新还是同步整仓。
+If the target directory is a git repository, inspect at least:
+- `git branch --show-current`
+- `git rev-parse HEAD`
+- `git status --short`
+- `git remote -v`
 
-### 第二步：先备份，再修改
+If the worktree is dirty or the remote is unclear, do not run `git pull` blindly. Preserve current state, then choose a minimal file update or repository sync.
 
-更新前，至少备份：
+### Step 2: back up before editing
+
+Before an update, back up at least:
 - `config.yaml`
-- 当前 cron 记录
-- 任何用户自定义脚本或 wrapper
+- the current cron entries
+- any user-defined wrapper scripts or helper launchers
 
-不要直接覆盖，尤其不要覆盖用户已经调好的 crontab。
+Do not overwrite these, especially a user-tuned cron setup.
 
-### 第三步：只改需要改的部分
+### Step 3: change only what actually needs to change
 
-常见更新分几类：
-- 只更新代码
-- 只更新配置
-- 只更新 cron
-- 只更新一次运行命令
-- 只更新 cleanup / audit 参数
-- 只更新网络 / 代理画像
+Common update classes include:
+- code update only
+- configuration update only
+- cron update only
+- one-shot invocation update only
+- cleanup or audit parameter update only
+- network or proxy profile update only
 
-优先做最小差异，不要顺手重构整套部署。
+Prefer the smallest diff. Do not refactor the whole deployment casually.
 
-### 第四步：更新后重新验证
+### Step 4: verify again after the update
 
-更新之后至少重跑：
+After the update, rerun at least:
 
 ```bash
 python main.py --config_path config.yaml --seed_box_name <seed_box_name> --home_dl_name <home_dl_name> --audit
 python main.py --config_path config.yaml --seed_box_name <seed_box_name> --home_dl_name <home_dl_name> --run_once
 ```
 
-如果 cron 存在，确认下一次计划执行没有新增重复条目。
+If cron exists, confirm that the next scheduled execution will not create duplicate entries or duplicate workers.
 
-## 如果目标主机已经有 crontab
+## If the target host already has cron entries
 
-这点非常重要。
+This matters a lot.
 
-如果你看到目标主机上已经有类似：
+If you see existing cron lines involving things like:
 - `main.py --seed_box_name ... --home_dl_name ...`
 - `flock ...`
-- 其他用户自定义任务、监控任务或 watchdog 任务
+- other user-defined jobs, monitoring jobs, or watchdog jobs
 
-你的默认动作应该是：
-1. 先读出来
-2. 先理解现有风格
-3. 再决定是保留、修改还是替换
+Your default behavior should be:
+1. read the current entries
+2. understand the current style
+3. decide whether to preserve, modify, or replace it
 
-不要：
-- 直接清空整份 crontab
-- 直接追加第二条同类任务
-- 直接改变用户已经验证过的执行风格
+Do not:
+- wipe the whole crontab blindly
+- append a second equivalent job by default
+- change an execution style that the user has already validated without asking
 
-更新 cron 时，默认保留调度时间、`flock` 锁路径、日志路径、`--run_once` 是否出现，以及 `exit_on_finish` 的配套行为，除非用户明确要求改。
+When updating cron, preserve the schedule, `flock` path, log path, `--run_once` usage, and any `exit_on_finish` pairing unless the user explicitly wants changes.
 
-## 配置文件怎么理解
+## How to think about the configuration file
 
-这套项目的配置通常分成三块：
+This project's configuration usually breaks into three areas.
 
 ### `transfer`
 
-这一块主要管：
-- 输入/输出路径
-- 同步节奏
-- 保留/删除策略
-- 恢复/重试逻辑
-- 是否启用额外功能（例如 direct-piece 或 cleanup 相关逻辑）
+This section mainly controls:
+- input and output paths
+- synchronization cadence
+- retention or deletion policy
+- recovery and retry behavior
+- optional features such as direct-piece or cleanup-related logic
 
 ### `seed_box`
 
-这一块主要管：
-- Seedbox 连接方式
-- Seedbox 上的 torrent 存放位置
-- 需要从哪些分类/目录读取资源
+This section mainly controls:
+- seedbox connection details
+- where torrents live on the seedbox
+- which categories or directories should be read from the source side
 
 ### `downloaders`
 
-这一块主要管：
-- 本地下载器的连接方式
-- 哪个下载器是最终落地的目标
-- 哪些分类需要回传或扫描
+This section mainly controls:
+- how to reach the local downloader
+- which downloader is the final landing target
+- which categories should be scanned or reconciled
 
-如果你不确定某个字段含义，优先问用户，不要自己猜。
+Ask before changing any field you do not understand.
 
-## 验收标准
+## Acceptance criteria
 
-一个“安装成功”的最低标准通常是：
+A minimal install success bar usually means:
 
-1. 配置能被正确读取
-2. `--audit` 正常
-3. `--run_once` 能正常跑一轮
-4. 如果启用了 cron，下一次调度不会重复启动同一任务
-5. 如果启用了 watch/progress，画面能持续刷新且和实际状态一致
-6. 如果启用了 cleanup，先有 plan，再执行
+1. the configuration can be read correctly
+2. `--audit` works
+3. `--run_once` can complete one pass
+4. if cron is enabled, the next schedule will not duplicate the same job
+5. if watch or progress mode is enabled, the output keeps updating and matches real state
+6. if cleanup is enabled, a plan is reviewed before execution
 
-如果用户要求更严格的验收，再补充对应测试或现场检查。
+If the user wants stricter criteria, add the relevant host checks or runtime validation.
 
-## 常见问题
+## Common problems
 
-### 1. 配置解析失败
+### 1. Configuration parsing fails
 
-先检查：
-- `config.yaml` 是否还保留了示例占位符
-- 字段名是否拼错
-- 是否把某些值填成了空字符串但实际上必填
+Check:
+- whether `config.yaml` still contains example placeholders
+- whether field names were mistyped
+- whether a required value was left as an empty string
 
-### 2. SSH 连不上目标主机
+### 2. SSH cannot reach the target host
 
-先确认：
-- SSH 别名是否存在
-- 用户名是否正确
-- 端口是否正确
-- 是否需要跳板 / ProxyJump
-- 是否能通过 BatchMode 免交互登录
+Check:
+- whether the SSH alias exists
+- whether the username is correct
+- whether the port is correct
+- whether a jump host or `ProxyJump` is required
+- whether non-interactive login works in BatchMode
 
-### 3. 任务看起来重复跑了
+### 3. The task seems to run twice
 
-先检查：
-- 是否已经存在 cron
-- 是否同时启用了另一个常驻进程
-- 是否 lock 文件生效
+Check:
+- whether cron already exists
+- whether another persistent process is already running
+- whether the lock file is effective
 
-### 4. 下载目录或 torrent 资源不对
+### 4. Download paths or torrent resources look wrong
 
-先确认：
-- 目标路径是否存在
-- Seedbox 侧的资源目录是否正确
-- 需要的是种子文件、数据路径，还是两者都要
+Check:
+- whether the target path exists
+- whether the seedbox-side resource path is correct
+- whether the run needs torrent files, data paths, or both
 
-### 5. cleanup 计划看起来会删太多
+### 5. The cleanup plan looks too aggressive
 
-先停下来，问用户确认。不要直接执行。
+Stop and ask the user before execution.
 
-### 6. 更新后行为变了
+### 6. Behavior changed after an update
 
-优先比对：
-- 旧的 `config.yaml`
-- 新的 `config.example.yaml`
-- 旧的 cron 行
-- 更新后的日志
+Compare:
+- the old `config.yaml`
+- the new `config.example.yaml`
+- the old cron line
+- the updated logs
 
-## 回滚建议
+## Rollback guidance
 
-如果更新后有问题：
+If an update causes problems:
 
-1. 先恢复 `config.yaml` 备份
-2. 恢复原有 crontab 条目
-3. 回退最近一次代码同步
-4. 再跑一次 `--audit`
-5. 再跑一次 `--run_once`
+1. restore the `config.yaml` backup
+2. restore the previous cron entries
+3. roll back the most recent code sync
+4. run `--audit` again
+5. run `--run_once` again
 
-不要在没有备份的情况下做大范围替换。
+Do not make broad replacements without a backup.
 
-## 给 AI 的执行原则
+## Execution principles for an AI assistant
 
-当你拿到这份文档时，默认遵守下面几条：
+When you receive this document, follow these defaults:
 
-- 先问，不要猜
-- 先读现状，不要直接改
-- 先保留，再替换；先备份，再覆盖
-- 先单次验证，再启用 cron 或其他自动化
-- 先审查 cleanup 计划，再执行
-- 如果是更新已有安装，默认做增量修改，而不是重装
-- 如果用户已经有 crontab、`config.yaml`、部署目录，就把它们当作真相来源
+- ask first; do not guess
+- read the current state before making changes
+- preserve before replacing; back up before overwriting
+- validate with a one-shot run before enabling cron or other automation
+- review the cleanup plan before executing cleanup
+- if this is an update to an existing install, prefer incremental change over reinstall
+- if the user already has a deployment directory, `config.yaml`, or cron entries, treat them as the source of truth
 
-## 相关文件
+## Related files
 
 - `README.md`
 - `config.example.yaml`
@@ -405,7 +413,7 @@ python main.py --config_path config.yaml --seed_box_name <seed_box_name> --home_
 - `tests/test_runtime_controls.py`
 - `tests/test_audit_manager.py`
 
-## 备注
+## Final note
 
-这份文档是给用户拿去喂给 AI 的，所以重点不是“炫技”，而是“AI 能不能稳稳把安装和更新做对”。
-如果用户后续要求更严格的部署风格，再在这份文档基础上增加针对性的安装分支即可。
+This file is meant to be handed to an AI assistant by a real user. The goal is not to sound clever. The goal is to help the AI perform installation and update work correctly, conservatively, and repeatably.
+If the user later wants a stricter or more specialized deployment style, extend this document with targeted branches instead of replacing the whole workflow.
