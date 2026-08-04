@@ -82,9 +82,6 @@ class DirectPieceDownloader:
             skipped_pieces=self.torrent.piece_count - len(incomplete_pieces),
         )
         self._emit_progress("started", result=result)
-        if not incomplete_pieces:
-            self._emit_progress("completed", result=result)
-            return result
 
         piece_queue: queue.Queue[int] = queue.Queue()
         for piece_index in incomplete_pieces:
@@ -95,52 +92,91 @@ class DirectPieceDownloader:
         error_holder: list[Exception] = []
         stop_event = threading.Event()
 
+        def record_failure(exc: Exception) -> None:
+            with error_lock:
+                if not error_holder:
+                    error_holder.append(exc)
+                stop_event.set()
+
         def worker() -> None:
-            reader = self.reader_factory()
+            reader = None
             try:
+                reader = self.reader_factory()
                 while not stop_event.is_set():
                     try:
                         piece_index = piece_queue.get_nowait()
                     except queue.Empty:
                         return
-
-                    try:
-                        piece_data = self._read_piece(reader, piece_index)
-                        self._verify_piece(piece_index, piece_data)
-                        self._write_piece(piece_index, piece_data)
-                        self.resume_store.mark_piece_complete(piece_index)
-                        with result_lock:
-                            result.downloaded_pieces += 1
-                            downloaded_pieces = result.downloaded_pieces
-                        self._emit_progress(
-                            "piece_verified",
-                            result=result,
-                            piece_index=piece_index,
-                            downloaded_pieces=downloaded_pieces,
-                        )
-                    except Exception as exc:  # pragma: no cover - exercised via joined worker state
-                        with error_lock:
-                            if not error_holder:
-                                error_holder.append(exc)
-                        stop_event.set()
+                    if stop_event.is_set():
                         return
+
+                    piece_data = self._read_piece(reader, piece_index)
+                    self._verify_piece(piece_index, piece_data)
+                    self._write_piece(piece_index, piece_data)
+                    self.resume_store.mark_piece_complete(piece_index)
+                    with result_lock:
+                        result.downloaded_pieces += 1
+                        downloaded_pieces = result.downloaded_pieces
+                    self._emit_progress(
+                        "piece_verified",
+                        result=result,
+                        piece_index=piece_index,
+                        downloaded_pieces=downloaded_pieces,
+                    )
+            except Exception as exc:  # pragma: no cover - exercised via joined worker state
+                record_failure(exc)
             finally:
-                close = getattr(reader, "close", None)
-                if callable(close):
-                    close()
+                if reader is not None:
+                    try:
+                        close = getattr(reader, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception as exc:  # pragma: no cover - exercised via joined worker state
+                        record_failure(exc)
 
         threads = [
             threading.Thread(target=worker, name=f"direct-piece-worker-{index}", daemon=True)
             for index in range(min(self.workers, len(incomplete_pieces)))
         ]
+        started_threads = []
         for thread in threads:
-            thread.start()
-        for thread in threads:
+            if stop_event.is_set():
+                break
+            try:
+                thread.start()
+            except Exception as exc:
+                record_failure(exc)
+                break
+            started_threads.append(thread)
+        for thread in started_threads:
             thread.join()
 
+        def fail(error: Exception) -> None:
+            diagnostic = str(error) or type(error).__name__
+            self._emit_progress("failed", result=result, error=diagnostic)
+            raise error
+
         if error_holder:
-            self._emit_progress("failed", result=result, error=str(error_holder[0]))
-            raise error_holder[0]
+            fail(error_holder[0])
+
+        accounted_pieces = result.downloaded_pieces + result.skipped_pieces
+        if accounted_pieces != self.torrent.piece_count:
+            fail(
+                DirectPieceDownloadError(
+                    f"direct piece download accounted for {accounted_pieces} of {self.torrent.piece_count} pieces"
+                )
+            )
+
+        try:
+            remaining_pieces = list(self.resume_store.iter_incomplete_pieces())
+        except Exception as exc:
+            fail(exc)
+        if remaining_pieces:
+            fail(
+                DirectPieceDownloadError(
+                    f"direct piece download resume state remains incomplete for {len(remaining_pieces)} pieces"
+                )
+            )
 
         self._emit_progress("completed", result=result)
         return result
