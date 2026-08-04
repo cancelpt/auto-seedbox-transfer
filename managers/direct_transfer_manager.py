@@ -5,7 +5,7 @@ import os
 import threading
 
 from managers.state_manager import StateManager
-from transfer.direct_piece_downloader import DirectPieceDownloader
+from transfer.direct_piece_downloader import DirectPieceDownloader, DirectPieceDownloadError
 from transfer.direct_piece_manifest import build_direct_piece_manifest
 from transfer.direct_piece_resume import DirectPieceResumeStore
 from transfer.direct_piece_telemetry import DirectPieceTelemetryProjector
@@ -137,6 +137,11 @@ class DirectTransferManager:
                     result = downloader.download()
                 finally:
                     telemetry.close()
+                accounted_pieces = result.downloaded_pieces + result.skipped_pieces
+                if accounted_pieces != torrent.piece_count:
+                    raise DirectPieceDownloadError(
+                        f"direct piece download accounted for {accounted_pieces} of {torrent.piece_count} pieces"
+                    )
                 state.is_direct_payload_ready = True
                 state.direct_payload_root = download_root
                 state.last_error = ""
